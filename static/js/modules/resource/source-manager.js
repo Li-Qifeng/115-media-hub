@@ -616,6 +616,26 @@
             renderResourceSourceManagerModal();
         }
 
+        function selectRangeFilteredResourceSources() {
+            const filtered = getFilteredResourceSourceViewList();
+            const selectedIndexes = filtered
+                .map((view, index) => (view.channelId && resourceSourceBulkSelected[view.channelId]) ? index : -1)
+                .filter(index => index >= 0);
+            if (selectedIndexes.length < 2) {
+                showToast('请先勾选区间的起点和终点', { tone: 'warn', duration: 2400, placement: 'top-center' });
+                return;
+            }
+            const start = Math.min(...selectedIndexes);
+            const end = Math.max(...selectedIndexes);
+            const next = { ...resourceSourceBulkSelected };
+            filtered.slice(start, end + 1).forEach(view => {
+                if (view.channelId) next[view.channelId] = true;
+            });
+            resourceSourceBulkSelected = next;
+            renderResourceSourceManagerModal();
+            showToast(`已补齐选择 ${end - start + 1} 个频道`, { tone: 'success', duration: 2200, placement: 'top-center' });
+        }
+
         function getResourceSourceSortModeLabel(mode = getResourceSourceSortMode()) {
             const normalized = String(mode || 'manual').trim().toLowerCase();
             if (normalized === 'recent') return '最近发布时间';
@@ -842,9 +862,10 @@
             const testBtn = document.getElementById('resource-source-manager-test-btn');
             const sampleInput = document.getElementById('resource-source-manager-test-sample-size');
             const selectAllBtn = document.getElementById('resource-source-manager-select-all-btn');
+            const rangeBtn = document.getElementById('resource-source-manager-range-btn');
             const invertBtn = document.getElementById('resource-source-manager-invert-btn');
             const syncNamesBtn = document.getElementById('resource-source-manager-sync-names-btn');
-            if (!shell || !typeFiltersEl || !statusFiltersEl || !activityFiltersEl || !searchInputEl || !sortSelectEl || !sortHintEl || !hintEl || !listEl || !selectedCountEl || !mobileFilteredCountEl || !mobileSelectedCountEl || !mobileListTabEl || !mobileToolsTabEl || !resultEl || !testBtn || !sampleInput || !selectAllBtn || !invertBtn || !syncNamesBtn) return;
+            if (!shell || !typeFiltersEl || !statusFiltersEl || !activityFiltersEl || !searchInputEl || !sortSelectEl || !sortHintEl || !hintEl || !listEl || !selectedCountEl || !mobileFilteredCountEl || !mobileSelectedCountEl || !mobileListTabEl || !mobileToolsTabEl || !resultEl || !testBtn || !sampleInput || !selectAllBtn || !rangeBtn || !invertBtn || !syncNamesBtn) return;
 
             const sources = resourceState.sources || [];
             const sectionIndex = getResourceSourceSectionIndex();
@@ -931,6 +952,8 @@
             selectAllBtn.classList.toggle('btn-disabled', !hasFiltered || isAllSelected);
             selectAllBtn.classList.toggle('resource-source-manager-select-btn-active', isAllSelected);
             selectAllBtn.textContent = isAllSelected ? '当前筛选结果已全选' : '全选当前筛选结果';
+            rangeBtn.disabled = selectedInFiltered < 2;
+            rangeBtn.classList.toggle('btn-disabled', selectedInFiltered < 2);
             invertBtn.disabled = !hasFiltered;
             invertBtn.classList.toggle('btn-disabled', !hasFiltered);
             syncNamesBtn.disabled = selectedInFiltered <= 0 || resourceSourceNameSyncBusy;

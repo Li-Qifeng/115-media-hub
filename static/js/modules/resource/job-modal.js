@@ -14,6 +14,54 @@
             return ['all', 'active', 'submitted', 'completed', 'failed'].includes(normalized) ? normalized : 'all';
         }
 
+        function normalizeScraperJobFilter(value = 'all') {
+            const normalized = String(value || 'all').trim().toLowerCase();
+            return ['all', 'active', 'completed', 'failed', 'rollback'].includes(normalized) ? normalized : 'all';
+        }
+
+        function isScraperJobActive(job) {
+            const status = String(job?.status || '').trim().toLowerCase();
+            return ['pending', 'running', 'rollback_running'].includes(status);
+        }
+
+        function getScraperJobCounts(jobs = []) {
+            const list = Array.isArray(jobs) ? jobs : [];
+            return {
+                total: list.length,
+                active: list.filter(isScraperJobActive).length,
+                completed: list.filter(job => ['completed', 'rolled_back'].includes(String(job?.status || '').toLowerCase())).length,
+                failed: list.filter(job => ['failed', 'partial', 'rollback_failed'].includes(String(job?.status || '').toLowerCase())).length,
+                rollback: list.filter(job => String(job?.status || '').toLowerCase().includes('rollback') || String(job?.status || '').toLowerCase() === 'rolled_back').length,
+            };
+        }
+
+        function getScraperJobDisplayCounts(jobs = []) {
+            const fallbackCounts = getScraperJobCounts(jobs);
+            const serverCounts = scraperJobState?.job_counts && typeof scraperJobState.job_counts === 'object'
+                ? scraperJobState.job_counts
+                : {};
+            return {
+                total: Number(serverCounts.total ?? fallbackCounts.total ?? 0),
+                active: Number(serverCounts.active ?? fallbackCounts.active ?? 0),
+                completed: Number(serverCounts.completed ?? fallbackCounts.completed ?? 0),
+                failed: Number(serverCounts.failed ?? fallbackCounts.failed ?? 0),
+                rollback: Number(serverCounts.rollback ?? fallbackCounts.rollback ?? 0),
+            };
+        }
+
+        function getTaskCenterActiveCount() {
+            const jobs = Array.isArray(resourceState.jobs) ? resourceState.jobs : [];
+            const pageActiveCount = jobs.filter(job => ['pending', 'running', 'submitted'].includes(String(job?.status || '').toLowerCase())).length;
+            const resourceActive = Number(resourceState?.job_counts?.active ?? resourceState?.stats?.active_job_count ?? pageActiveCount) || 0;
+            const scraperJobs = Array.isArray(scraperJobState.jobs) ? scraperJobState.jobs : [];
+            const scraperActive = Number(scraperJobState?.job_counts?.active ?? getScraperJobCounts(scraperJobs).active ?? 0) || 0;
+            return resourceActive + scraperActive;
+        }
+
+        function hasActiveScraperJobs() {
+            return getScraperJobCounts(scraperJobState.jobs || []).active > 0;
+        }
+
         function getResourceJobDisplayCounts(jobs = []) {
             const fallbackCounts = getResourceJobCounts(jobs);
             const serverCounts = resourceState?.job_counts && typeof resourceState.job_counts === 'object'
@@ -37,9 +85,62 @@
             return true;
         }
 
+        function isScraperJobVisible(job, filter = 'all') {
+            const status = String(job?.status || '').toLowerCase();
+            if (filter === 'active') return ['pending', 'running', 'rollback_running'].includes(status);
+            if (filter === 'completed') return ['completed', 'rolled_back'].includes(status);
+            if (filter === 'failed') return ['failed', 'partial', 'rollback_failed'].includes(status);
+            if (filter === 'rollback') return status.includes('rollback') || status === 'rolled_back';
+            return true;
+        }
+
+        function renderTaskCenterTypeTabs() {
+            const container = document.getElementById('resource-job-type-tabs');
+            if (!container) return;
+            const resourceCounts = getResourceJobDisplayCounts(resourceState.jobs || []);
+            const scraperCounts = getScraperJobDisplayCounts(scraperJobState.jobs || []);
+            const options = [
+                { value: 'resource', label: '导入任务', count: resourceCounts.total },
+                { value: 'scraper', label: '刮削任务', count: scraperCounts.total },
+            ];
+            container.innerHTML = options.map(option => `
+                <button
+                    type="button"
+                    data-task-center-tab="${escapeHtml(option.value)}"
+                    class="resource-job-type-tab ${taskCenterTab === option.value ? 'resource-job-type-tab-active' : ''}"
+                >${escapeHtml(option.label)} (${escapeHtml(String(option.count))})</button>
+            `).join('');
+            const clearMenu = document.getElementById('resource-job-clear-menu');
+            clearMenu?.classList.toggle('hidden', taskCenterTab !== 'resource');
+            const note = document.getElementById('resource-job-modal-note');
+            if (note) {
+                note.textContent = taskCenterTab === 'scraper'
+                    ? '刮削任务会记录每次执行的重命名进度；文件列表默认折叠，可展开查看每个文件状态。'
+                    : '默认加载最近任务，处理中任务置顶；筛选和加载更多会从后端分页读取。';
+            }
+        }
+
         function renderResourceJobFilters(counts) {
             const container = document.getElementById('resource-job-filter-tabs');
             if (!container) return;
+            if (taskCenterTab === 'scraper') {
+                const scraperCounts = counts || getScraperJobDisplayCounts(scraperJobState.jobs || []);
+                const options = [
+                    { value: 'all', label: '全部', count: scraperCounts.total },
+                    { value: 'active', label: '处理中', count: scraperCounts.active },
+                    { value: 'completed', label: '已完成', count: scraperCounts.completed },
+                    { value: 'failed', label: '异常', count: scraperCounts.failed },
+                    { value: 'rollback', label: '回退', count: scraperCounts.rollback },
+                ];
+                container.innerHTML = options.map(option => `
+                    <button
+                        type="button"
+                        data-resource-job-filter="${escapeHtml(option.value)}"
+                        class="resource-job-filter-tab ${scraperJobFilter === option.value ? 'resource-job-filter-tab-active' : ''}"
+                    >${escapeHtml(option.label)} (${escapeHtml(String(option.count))})</button>
+                `).join('');
+                return;
+            }
             const options = [
                 { value: 'all', label: '全部', count: counts.total },
                 { value: 'active', label: '处理中', count: counts.active },
@@ -64,12 +165,177 @@
             return '还没有导入任务，资源卡片里的“下载到 115 / 转存到 115”会在这里留下记录。';
         }
 
+        function getScraperJobEmptyText(filter = 'all') {
+            if (filter === 'active') return '当前没有正在处理的刮削任务。';
+            if (filter === 'completed') return '当前没有已完成的刮削记录。';
+            if (filter === 'failed') return '当前没有异常刮削任务。';
+            if (filter === 'rollback') return '当前没有回退相关任务。';
+            return '还没有刮削任务，在刮削管理里执行重命名后会出现在这里。';
+        }
+
+        function getScraperJobStatusLabel(status) {
+            const normalized = String(status || '').trim();
+            const labels = {
+                pending: '等待中',
+                running: '执行中',
+                completed: '已完成',
+                partial: '部分完成',
+                failed: '失败',
+                rollback_running: '回退中',
+                rolled_back: '已回退',
+                rollback_failed: '回退失败',
+            };
+            return labels[normalized] || normalized || '--';
+        }
+
+        function getScraperActionStatusLabel(action = {}) {
+            const rollbackStatus = String(action.rollback_status || '').trim();
+            const status = rollbackStatus || String(action.status || '').trim();
+            const labels = {
+                pending: '等待',
+                running: '处理中',
+                completed: rollbackStatus ? '已回退' : '成功',
+                skipped: '跳过',
+                failed: rollbackStatus ? '回退失败' : '失败',
+            };
+            return labels[status] || status || '--';
+        }
+
+        function getScraperJobTitle(job = {}) {
+            const tmdb = job.tmdb && typeof job.tmdb === 'object' ? job.tmdb : {};
+            const title = tmdb.tmdb_title || tmdb.title || tmdb.tmdb_localized_title || tmdb.tmdb_english_title || '';
+            const year = tmdb.tmdb_year || tmdb.year || '';
+            const mediaTitle = `${title || ''}${year ? ` (${year})` : ''}`.trim();
+            return mediaTitle || `刮削任务 #${Number(job.id || 0) || '--'}`;
+        }
+
+        function getScraperJobProgress(job = {}) {
+            const total = Math.max(0, Number(job.total_actions || 0) || 0);
+            const actions = Array.isArray(job.actions) ? job.actions : [];
+            const derivedSucceeded = actions.filter(action => ['completed', 'skipped'].includes(String(action?.status || '').toLowerCase())).length;
+            const derivedFailed = actions.filter(action => String(action?.status || '').toLowerCase() === 'failed').length;
+            const derivedRollbackSucceeded = actions.filter(action => ['completed', 'skipped'].includes(String(action?.rollback_status || '').toLowerCase())).length;
+            const derivedRollbackFailed = actions.filter(action => String(action?.rollback_status || '').toLowerCase() === 'failed').length;
+            const succeeded = Math.max(0, Number(job.succeeded_actions || 0) || 0, derivedSucceeded);
+            const failed = Math.max(0, Number(job.failed_actions || 0) || 0, derivedFailed);
+            const rollbackSucceeded = Math.max(0, Number(job.rollback_succeeded_actions || 0) || 0, derivedRollbackSucceeded);
+            const rollbackFailed = Math.max(0, Number(job.rollback_failed_actions || 0) || 0, derivedRollbackFailed);
+            const rollbackMode = String(job.status || '').toLowerCase().includes('rollback') || String(job.status || '').toLowerCase() === 'rolled_back';
+            const done = rollbackMode ? rollbackSucceeded + rollbackFailed : succeeded + failed;
+            const percent = total > 0 ? Math.max(0, Math.min(100, Math.round((done / total) * 100))) : 0;
+            return { total, succeeded, failed, done, percent, rollbackSucceeded, rollbackFailed, rollbackMode };
+        }
+
+        function renderScraperJobActions(job = {}) {
+            const actions = Array.isArray(job.actions) ? job.actions : [];
+            if (!actions.length) return '<div class="scraper-job-action-empty">暂无文件明细。</div>';
+            return actions.map(action => {
+                const isFailed = ['failed'].includes(String(action.status || '').toLowerCase()) || ['failed'].includes(String(action.rollback_status || '').toLowerCase());
+                const statusLabel = getScraperActionStatusLabel(action);
+                return `
+                    <div class="scraper-task-file-row ${isFailed ? 'is-failed' : ''}">
+                        <span class="scraper-task-file-status">${escapeHtml(statusLabel)}</span>
+                        <div class="scraper-task-file-paths">
+                            <div><b>旧</b>${escapeHtml(action.old_path || action.old_name || '--')}</div>
+                            <div><b>新</b>${escapeHtml(action.new_path || action.new_name || '--')}</div>
+                            ${action.status_detail || action.rollback_detail ? `<em>${escapeHtml(action.rollback_detail || action.status_detail || '')}</em>` : ''}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function renderScraperJobs() {
+            const container = document.getElementById('resource-job-list');
+            if (!container) return;
+            const jobs = Array.isArray(scraperJobState.jobs) ? scraperJobState.jobs : [];
+            const counts = getScraperJobDisplayCounts(jobs);
+            renderTaskCenterTypeTabs();
+            renderResourceJobFilters(counts);
+            if (scraperJobLoading && !jobs.length) {
+                container.innerHTML = '<div class="resource-job-card-empty">正在读取刮削任务...</div>';
+                return;
+            }
+            const normalizedFilter = normalizeScraperJobFilter(scraperJobFilter);
+            const visibleJobs = jobs.filter(job => isScraperJobVisible(job, normalizedFilter));
+            if (!visibleJobs.length) {
+                container.innerHTML = `<div class="resource-job-card-empty">${escapeHtml(getScraperJobEmptyText(scraperJobFilter))}</div>`;
+                return;
+            }
+            container.innerHTML = visibleJobs.map(job => {
+                const jobId = Number(job.id || 0) || 0;
+                const progress = getScraperJobProgress(job);
+                const expanded = scraperJobExpanded.has(jobId);
+                const providerLabel = String(job.provider || '') === 'quark' ? '夸克' : '115';
+                const canRollback = !!job.can_rollback;
+                const rollbackLabel = canRollback ? '回退' : '不可回退';
+                const actionCount = Array.isArray(job.actions) ? job.actions.length : 0;
+                return `
+                    <div class="resource-job-card scraper-task-card">
+                        <div class="resource-job-card-head">
+                            <div class="min-w-0 flex-1">
+                                <div class="flex flex-wrap items-center gap-2">
+                                    <div class="resource-job-card-title">${escapeHtml(getScraperJobTitle(job))}</div>
+                                    ${buildResourceStatusBadge(job.status)}
+                                    <span class="text-[10px] px-3 py-1 rounded-full bg-sky-500/10 text-sky-100 border border-sky-500/20">刮削</span>
+                                    <span class="text-[10px] px-3 py-1 rounded-full bg-slate-700 text-slate-100">${escapeHtml(providerLabel)}</span>
+                                    <span class="text-[10px] px-3 py-1 rounded-full bg-slate-700 text-slate-100">#${escapeHtml(String(jobId))}</span>
+                                </div>
+                                <div class="scraper-task-progress">
+                                    <div class="scraper-task-progress-head">
+                                        <span>${escapeHtml(getScraperJobStatusLabel(job.status))}</span>
+                                        <span>${escapeHtml(String(progress.percent))}% · ${escapeHtml(String(progress.done))}/${escapeHtml(String(progress.total))}</span>
+                                    </div>
+                                    <div class="scraper-task-progress-track">
+                                        <span style="width: ${escapeHtml(String(progress.percent))}%"></span>
+                                    </div>
+                                </div>
+                                <div class="resource-job-card-grid">
+                                    <div class="resource-job-field">
+                                        <div class="resource-job-field-label">文件数量</div>
+                                        <div class="resource-job-field-value">成功 ${escapeHtml(String(progress.succeeded))} / 失败 ${escapeHtml(String(progress.failed))} / 总计 ${escapeHtml(String(progress.total))}</div>
+                                    </div>
+                                    <div class="resource-job-field">
+                                        <div class="resource-job-field-label">回退</div>
+                                        <div class="resource-job-field-value">成功 ${escapeHtml(String(progress.rollbackSucceeded))} / 失败 ${escapeHtml(String(progress.rollbackFailed))}</div>
+                                    </div>
+                                    <div class="resource-job-field">
+                                        <div class="resource-job-field-label">创建时间</div>
+                                        <div class="resource-job-field-value">${escapeHtml(job.created_at || '--')}</div>
+                                    </div>
+                                    <div class="resource-job-field">
+                                        <div class="resource-job-field-label">更新时间</div>
+                                        <div class="resource-job-field-value">${escapeHtml(job.updated_at || job.finished_at || '--')}</div>
+                                    </div>
+                                </div>
+                                <div class="resource-job-status-note">${escapeHtml(job.status_detail || '--')}</div>
+                            </div>
+                        </div>
+                        <div class="resource-job-card-actions">
+                            <div class="flex flex-wrap gap-2 shrink-0">
+                                <button type="button" data-scraper-job-action="toggle" data-scraper-job-id="${escapeHtml(String(jobId))}" class="px-4 py-2 rounded-xl text-sm font-bold bg-slate-700 hover:bg-slate-600 text-slate-100">${expanded ? '收起文件' : `展开文件（${escapeHtml(String(actionCount))}）`}</button>
+                                <button type="button" data-scraper-job-action="rollback" data-scraper-job-id="${escapeHtml(String(jobId))}" class="px-4 py-2 rounded-xl text-sm font-bold ${canRollback ? 'bg-amber-600 hover:bg-amber-500 text-white' : 'bg-slate-700 text-slate-400 btn-disabled'}" ${canRollback ? '' : 'disabled'}>${rollbackLabel}</button>
+                            </div>
+                        </div>
+                        <div class="scraper-task-file-list ${expanded ? '' : 'hidden'}">
+                            ${renderScraperJobActions(job)}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
         function renderResourceJobs() {
             const container = document.getElementById('resource-job-list');
             const jobs = Array.isArray(resourceState.jobs) ? resourceState.jobs : [];
             const counts = getResourceJobDisplayCounts(jobs);
             if (!container) return;
 
+            if (taskCenterTab === 'scraper') {
+                renderScraperJobs();
+                return;
+            }
+            renderTaskCenterTypeTabs();
             renderResourceJobFilters(counts);
 
             const normalizedFilter = normalizeResourceJobFilter(resourceJobFilter);
@@ -169,9 +435,7 @@
             const btn = document.getElementById('resource-job-modal-toggle');
             const badge = document.getElementById('resource-job-modal-badge');
             if (!btn || !badge) return;
-            const jobs = Array.isArray(resourceState.jobs) ? resourceState.jobs : [];
-            const pageActiveCount = jobs.filter(job => ['pending', 'running', 'submitted'].includes(String(job?.status || '').toLowerCase())).length;
-            const activeCount = Number(resourceState?.job_counts?.active ?? resourceState?.stats?.active_job_count ?? pageActiveCount) || 0;
+            const activeCount = getTaskCenterActiveCount();
             badge.textContent = String(activeCount);
             badge.classList.toggle('hidden', activeCount <= 0);
             btn.classList.toggle('border-sky-500', activeCount > 0);
@@ -237,6 +501,78 @@
             if (terminalCount <= 0) closeResourceJobClearMenu();
         }
 
+        function applyScraperJobsState(data) {
+            if (!data || typeof data !== 'object') return;
+            const jobs = Array.isArray(data.jobs) ? data.jobs : (scraperJobState.jobs || []);
+            const counts = getScraperJobCounts(jobs);
+            scraperJobState = {
+                ...scraperJobState,
+                jobs,
+                active_jobs: jobs.filter(isScraperJobActive),
+                job_counts: data.job_counts && typeof data.job_counts === 'object' ? data.job_counts : counts,
+            };
+            const validJobIds = new Set(jobs.map(job => Number(job.id || 0) || 0).filter(Boolean));
+            scraperJobExpanded = new Set(Array.from(scraperJobExpanded).filter(jobId => validJobIds.has(jobId)));
+            syncResourceJobModalTrigger();
+            if (taskCenterTab === 'scraper') renderResourceJobs();
+        }
+
+        async function fetchScraperJobsState({ silent = false, limit = 20 } = {}) {
+            scraperJobLoading = true;
+            if (!silent && taskCenterTab === 'scraper') renderResourceJobs();
+            try {
+                const normalizedLimit = Math.max(1, Math.min(100, Number(limit || 20) || 20));
+                const data = await window.MediaHubApi.getJson(`/scraper/jobs/state?limit=${encodeURIComponent(String(normalizedLimit))}`);
+                applyScraperJobsState(data);
+                return data;
+            } catch (error) {
+                if (!silent) showToast(`读取刮削任务失败：${error?.message || '请稍后重试'}`, { tone: 'error', duration: 3200, placement: 'top-center' });
+                return null;
+            } finally {
+                scraperJobLoading = false;
+                if (taskCenterTab === 'scraper') renderResourceJobs();
+            }
+        }
+
+        async function refreshTaskCenterJobsOnly({ preferTab = '' } = {}) {
+            if (preferTab === 'scraper' || preferTab === 'resource') {
+                taskCenterTab = preferTab;
+            }
+            const tasks = [];
+            if (typeof refreshResourceJobsOnly === 'function') {
+                tasks.push(refreshResourceJobsOnly());
+            }
+            tasks.push(fetchScraperJobsState({ silent: true }));
+            await Promise.allSettled(tasks);
+            syncResourceJobModalTrigger();
+            renderResourceJobs();
+        }
+
+        function toggleScraperJobExpanded(jobId) {
+            const normalizedJobId = Number(jobId || 0) || 0;
+            if (!normalizedJobId) return;
+            if (scraperJobExpanded.has(normalizedJobId)) {
+                scraperJobExpanded.delete(normalizedJobId);
+            } else {
+                scraperJobExpanded.add(normalizedJobId);
+            }
+            renderResourceJobs();
+        }
+
+        async function rollbackScraperJobFromTaskCenter(jobId) {
+            const normalizedJobId = Number(jobId || 0) || 0;
+            if (!normalizedJobId) return;
+            if (!(await window.showAppConfirm(`回退刮削任务 #${normalizedJobId} 的成功动作吗？`))) return;
+            try {
+                await window.MediaHubApi.postJson(`/scraper/jobs/${encodeURIComponent(String(normalizedJobId))}/rollback`, {});
+                await fetchScraperJobsState({ silent: true });
+                showToast('回退任务已提交', { tone: 'success', duration: 2400, placement: 'top-center' });
+                if (typeof scheduleResourcePolling === 'function') scheduleResourcePolling(1000);
+            } catch (error) {
+                showToast(`回退提交失败：${error?.message || '请稍后重试'}`, { tone: 'error', duration: 3400, placement: 'top-center' });
+            }
+        }
+
         function toggleResourceJobModal(force) {
             const modal = document.getElementById('resource-job-modal');
             if (!modal) return;
@@ -250,10 +586,25 @@
             if (resourceJobModalOpen) {
                 lockPageScroll();
                 syncResourceJobClearMenuState();
-                void fetchResourceJobsPage({ status: resourceJobFilter, offset: 0 });
+                renderTaskCenterTypeTabs();
+                if (taskCenterTab === 'scraper') {
+                    void fetchScraperJobsState();
+                } else {
+                    void fetchResourceJobsPage({ status: resourceJobFilter, offset: 0 });
+                    void fetchScraperJobsState({ silent: true });
+                }
             } else {
                 closeResourceJobClearMenu();
                 unlockPageScroll();
             }
             syncResourceJobModalTrigger();
         }
+
+        Object.assign(window, {
+            applyScraperJobsState,
+            fetchScraperJobsState,
+            refreshTaskCenterJobsOnly,
+            hasActiveScraperJobs,
+            toggleScraperJobExpanded,
+            rollbackScraperJobFromTaskCenter,
+        });

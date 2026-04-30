@@ -60,6 +60,24 @@
             : { selected_entries: [] };
         const selectedCount = Array.isArray(selectionState.selected_entries) ? selectionState.selected_entries.length : 0;
         const selectedLabel = selectedCount > 0 ? `已选 ${selectedCount} 项` : '未选择';
+        const currentRenderCid = String(ctx.resourceShareCurrentCid || '0');
+        const searchKeyword = String(ctx.resourceShareSearchKeyword || '').trim();
+        const previousRenderCid = String(treeEl.dataset.resourceShareRenderCid || '');
+        const previousSearchKeyword = String(treeEl.dataset.resourceShareSearchKeyword || '');
+        const shouldPreserveScroll = previousRenderCid === currentRenderCid && previousSearchKeyword === searchKeyword;
+        const previousScrollTop = shouldPreserveScroll ? treeEl.scrollTop : 0;
+        const restoreTreeScroll = () => {
+            treeEl.dataset.resourceShareRenderCid = currentRenderCid;
+            treeEl.dataset.resourceShareSearchKeyword = searchKeyword;
+            treeEl.scrollTop = previousScrollTop;
+            if (window.requestAnimationFrame) {
+                window.requestAnimationFrame(() => {
+                    if (treeEl.dataset.resourceShareRenderCid === currentRenderCid && treeEl.dataset.resourceShareSearchKeyword === searchKeyword) {
+                        treeEl.scrollTop = previousScrollTop;
+                    }
+                });
+            }
+        };
         card.classList.toggle('hidden', !importMode);
         if (selectedCountEl) {
             selectedCountEl.classList.toggle('hidden', !importMode || !isShare);
@@ -75,6 +93,7 @@
         if (!isShare) {
             rootTitleEl.innerHTML = '<span class="text-slate-400">当前路径</span><span class="resource-browser-sep">/</span><span class="resource-browser-crumb resource-browser-crumb-active">当前资源不支持浏览分享目录</span>';
             treeEl.innerHTML = '<div class="resource-browser-empty">当前链接不支持浏览分享目录。</div>';
+            restoreTreeScroll();
             if (currentCheckAllEl) {
                 currentCheckAllEl.checked = false;
                 currentCheckAllEl.indeterminate = false;
@@ -87,7 +106,6 @@
 
         const currentEntries = ctx.getCurrentResourceShareEntries();
         const filteredEntries = ctx.getFilteredCurrentResourceShareEntries();
-        const searchKeyword = String(ctx.resourceShareSearchKeyword || '').trim();
         const currentFolderLoading = !!ctx.resourceShareLoadingParents[ctx.resourceShareCurrentCid];
         const currentFolderLoadingMore = !!ctx.resourceShareLoadingMoreParents[ctx.resourceShareCurrentCid];
         const currentFolderHasMore = !!ctx.resourceShareHasMoreByParent[ctx.resourceShareCurrentCid];
@@ -161,6 +179,7 @@
                 : '';
             treeEl.innerHTML = `${filterNoteHtml}${buildResourceShareRows(ctx, filteredEntries)}${loadMoreHtml}`;
         }
+        restoreTreeScroll();
 
         const selectedInCurrentCount = currentEntries.filter(entry => ctx.isResourceShareEntryEffectivelySelected(entry)).length;
         if (currentCheckAllEl) {

@@ -10,16 +10,20 @@ const state = {
     entries: [],
     summary: { folder_count: 0, file_count: 0 },
     selected: new Map(),
+    entrySort: { key: 'name', direction: 'asc' },
     search: '',
     loading: false,
+    navigationBusy: false,
     moveBuffer: null,
     identifyBusy: false,
     identifyResult: null,
+    identifySelectionKey: '',
     tmdb: null,
     manualBusy: false,
     manualResults: [],
     planBusy: false,
     plan: null,
+    planSelections: new Set(),
     executeBusy: false,
     jobs: [],
     jobsBusy: false,
@@ -103,10 +107,44 @@ function formatFileSize(size) {
     return `${next.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
 }
 
+function formatDateMinute(date) {
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '';
+    const pad = value => String(value).padStart(2, '0');
+    return [
+        date.getFullYear(),
+        pad(date.getMonth() + 1),
+        pad(date.getDate()),
+    ].join('-') + ` ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
 function formatTimeText(value) {
     const text = String(value || '').trim();
     if (!text) return '--';
+    if (/^\d{10,17}$/.test(text)) {
+        const numeric = Number(text);
+        if (Number.isFinite(numeric)) {
+            const timestamp = text.length === 10 ? numeric * 1000 : numeric;
+            const formatted = formatDateMinute(new Date(timestamp));
+            if (formatted) return formatted;
+        }
+    }
+    const parsed = Date.parse(text);
+    if (Number.isFinite(parsed)) {
+        const formatted = formatDateMinute(new Date(parsed));
+        if (formatted) return formatted;
+    }
     return text.replace('T', ' ').slice(0, 16);
+}
+
+function parseEntryModifiedMs(value) {
+    const text = String(value || '').trim();
+    if (!text) return 0;
+    if (/^\d{10,17}$/.test(text)) {
+        const numeric = Number(text);
+        if (Number.isFinite(numeric)) return text.length === 10 ? numeric * 1000 : numeric;
+    }
+    const parsed = Date.parse(text);
+    return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function getEntryIcon(isDir) {
@@ -140,13 +178,56 @@ function getSelectedEntries() {
         .map(item => ({ ...item }));
 }
 
+function getSelectionKey(entries = getSelectedEntries()) {
+    return entries
+        .map(item => `${item.is_dir ? 'd' : 'f'}:${item.id}`)
+        .sort()
+        .join('|');
+}
+
+function resetIdentifyContext({ resetInputs = false } = {}) {
+    state.identifyResult = null;
+    state.identifySelectionKey = '';
+    state.tmdb = null;
+    state.manualResults = [];
+    if (resetInputs) {
+        const manualInput = $('scraper-manual-query');
+        if (manualInput) manualInput.value = '';
+        const mediaSelect = $('scraper-manual-media-type');
+        if (mediaSelect) mediaSelect.value = 'movie';
+    }
+}
+
 function clearSelection() {
     state.selected.clear();
 }
 
 function clearPlan() {
     state.plan = null;
+    state.planSelections.clear();
     renderPlan();
+    renderEntries();
+}
+
+function invalidateSelectionContext() {
+    resetIdentifyContext({ resetInputs: true });
+    closeIdentifyPanel();
+    clearPlan();
+}
+
+function openIdentifyPanel() {
+    const panel = $('scraper-identify-panel');
+    if (!panel) return;
+    panel.classList.remove('hidden');
+    panel.classList.add('is-open');
+    setTimeout(() => $('scraper-manual-query')?.focus(), 30);
+}
+
+function closeIdentifyPanel() {
+    const panel = $('scraper-identify-panel');
+    if (!panel) return;
+    panel.classList.add('hidden');
+    panel.classList.remove('is-open');
 }
 
 function setBusyButton(button, busy, busyText = '处理中...', idleText = '') {
@@ -253,11 +334,35 @@ function renderBreadcrumbs() {
     }).join('');
 }
 
+function getPlanActions() {
+    return state.plan && Array.isArray(state.plan.actions) ? state.plan.actions : [];
+}
+
+function getSelectedReadyPlanCount() {
+    return getPlanActions().filter(action => action.ready && state.planSelections.has(Number(action.action_index || 0))).length;
+}
+
 function renderSelection() {
     const countEl = $('scraper-selection-count');
+    const selectedEntries = getSelectedEntries();
+    const planActions = getPlanActions();
+    const selectedReadyCount = getSelectedReadyPlanCount();
+    const hasPlan = planActions.length > 0;
+    const hasBinding = !!(state.tmdb && Number(state.tmdb.tmdb_id || state.tmdb.id || 0) > 0);
     if (countEl) {
-        const count = state.selected.size;
-        countEl.textContent = count ? `已选择 ${count} 项` : '未选择条目';
+        if (hasPlan) {
+            const readyCount = planActions.filter(action => action.ready).length;
+            countEl.textContent = `预览 ${planActions.length} 项 / 可执行 ${readyCount} 项 / 已勾选 ${selectedReadyCount} 项`;
+        } else {
+            const count = selectedEntries.length;
+            countEl.textContent = count ? `已选择 ${count} 项` : '未选择条目';
+        }
+    }
+    const bindingBtn = $('scraper-bound-media-btn');
+    if (bindingBtn) {
+        bindingBtn.classList.toggle('hidden', !hasBinding);
+        bindingBtn.disabled = !hasBinding;
+        bindingBtn.textContent = hasBinding ? `影视：${getTmdbDisplayTitle()}` : '';
     }
     const checkAll = $('scraper-check-all');
     if (checkAll) {
@@ -267,6 +372,46 @@ function renderSelection() {
         checkAll.indeterminate = selectedInCurrent > 0 && selectedInCurrent < selectable.length;
         checkAll.disabled = state.loading || selectable.length <= 0;
     }
+    const hasSelection = selectedEntries.length > 0;
+    const selectedSingleFolder = selectedEntries.length === 1 && !!selectedEntries[0].is_dir;
+    const selectedInCurrent = state.entries.filter(item => state.selected.has(item.id)).length;
+    const actionRules = {
+        'select-range': !hasPlan && selectedInCurrent >= 2,
+        'rename-selected': selectedSingleFolder,
+        'prepare-move': hasSelection,
+        'delete-selected': hasSelection,
+        identify: hasSelection,
+    };
+    Object.entries(actionRules).forEach(([action, enabled]) => {
+        const button = document.querySelector(`[data-scraper-action="${action}"]`);
+        if (!button) return;
+        button.disabled = state.loading || !enabled;
+        button.classList.toggle('btn-disabled', state.loading || !enabled);
+        if (action === 'identify') button.textContent = hasBinding ? '修改识别' : '识别';
+    });
+    const inlineBuildBtn = $('scraper-inline-build-plan-btn');
+    if (inlineBuildBtn) {
+        const showBuild = hasSelection && hasBinding && !hasPlan;
+        inlineBuildBtn.classList.toggle('hidden', !showBuild);
+        inlineBuildBtn.disabled = state.loading || state.planBusy || !showBuild;
+        inlineBuildBtn.classList.toggle('btn-disabled', state.loading || state.planBusy || !showBuild);
+        inlineBuildBtn.textContent = state.planBusy ? '生成中...' : '生成预览';
+    }
+    const clearPlanBtn = $('scraper-clear-plan-btn');
+    if (clearPlanBtn) {
+        clearPlanBtn.classList.toggle('hidden', !hasPlan);
+        clearPlanBtn.disabled = !hasPlan || state.executeBusy;
+        clearPlanBtn.classList.toggle('btn-disabled', !hasPlan || state.executeBusy);
+    }
+    const inlineExecuteBtn = $('scraper-inline-execute-btn');
+    if (inlineExecuteBtn) {
+        const showExecute = hasPlan;
+        inlineExecuteBtn.classList.toggle('hidden', !showExecute);
+        inlineExecuteBtn.disabled = state.executeBusy || selectedReadyCount <= 0;
+        inlineExecuteBtn.classList.toggle('btn-disabled', state.executeBusy || selectedReadyCount <= 0);
+        inlineExecuteBtn.textContent = state.executeBusy ? '提交中...' : `执行重命名 ${selectedReadyCount} 项`;
+    }
+    syncFolderRenameControl();
 }
 
 function renderMoveBuffer() {
@@ -303,6 +448,58 @@ function renderEntries() {
         refreshBtn.disabled = !!state.loading;
         refreshBtn.classList.toggle('btn-disabled', !!state.loading);
     }
+    const header = document.querySelector('.scraper-entry-header');
+    const table = document.querySelector('.scraper-entry-table');
+    const planActions = getPlanActions();
+    table?.classList.toggle('is-preview-mode', planActions.length > 0);
+    if (planActions.length) {
+        if (header) {
+            header.innerHTML = `
+                <div>原文件</div>
+                <span>新名称预览</span>
+                <span>执行</span>
+            `;
+        }
+        list.innerHTML = planActions.map((action) => {
+            const actionIndex = Number(action.action_index || 0) || 0;
+            const checked = action.ready && state.planSelections.has(actionIndex);
+            const readyClass = action.ready ? 'is-ready' : 'is-blocked';
+            const statusText = action.ready ? '可执行' : '需处理';
+            const oldPath = String(action.old_path || action.old_name || '--');
+            const newPath = String(action.new_path || action.new_name || '--');
+            return `
+                <div class="scraper-preview-row ${readyClass}">
+                    <div class="scraper-preview-original">
+                        <span class="scraper-plan-badge">${action.is_dir ? '文件夹' : '文件'}</span>
+                        <strong title="${escapeHtml(oldPath)}">${escapeHtml(action.old_name || '--')}</strong>
+                    </div>
+                    <div class="scraper-preview-target">
+                        <div class="scraper-preview-target-head">
+                            <span class="scraper-preview-status ${action.ready ? 'is-ok' : 'is-warn'}">${statusText}</span>
+                            <strong title="${escapeHtml(newPath)}">${escapeHtml(action.new_name || '--')}</strong>
+                        </div>
+                        ${action.issue ? `<em>${escapeHtml(action.issue)}</em>` : ''}
+                    </div>
+                    <label class="scraper-preview-check">
+                        <input type="checkbox" class="ui-checkbox ui-checkbox-sm" data-scraper-plan-check="${escapeHtml(String(actionIndex))}" ${checked ? 'checked' : ''} ${action.ready ? '' : 'disabled'}>
+                        <span>${action.ready ? '执行' : '不可执行'}</span>
+                    </label>
+                </div>
+            `;
+        }).join('');
+        return;
+    }
+    if (header) {
+        header.innerHTML = `
+            <div class="scraper-entry-name-cell">
+                <input id="scraper-check-all" type="checkbox" class="ui-checkbox ui-checkbox-sm" aria-label="选择当前目录全部条目">
+                ${renderSortButton('name', '名称')}
+            </div>
+            ${renderSortButton('modified_at', '修改时间')}
+            ${renderSortButton('size', '大小')}
+        `;
+        renderSelection();
+    }
     if (state.loading && !state.entries.length) {
         list.innerHTML = `<div class="scraper-empty-row">正在读取${escapeHtml(getProviderLabel())}目录...</div>`;
         return;
@@ -315,14 +512,13 @@ function renderEntries() {
         list.innerHTML = '<div class="scraper-empty-row">当前目录没有可显示条目。</div>';
         return;
     }
-    const rows = state.entries.slice().sort((a, b) => {
-        if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
-        return String(a.name || '').localeCompare(String(b.name || ''), 'zh-Hans-CN');
-    }).map((entry) => {
+    const rows = getDisplayEntries().map((entry) => {
         const selected = state.selected.has(entry.id);
+        const entryTitle = escapeHtml(entry.path || entry.name || '');
+        const entryName = escapeHtml(entry.name || '--');
         const nameHtml = entry.is_dir
-            ? `<button type="button" class="scraper-entry-link" data-scraper-entry-enter="${escapeHtml(entry.id)}">${escapeHtml(entry.name || '--')}</button>`
-            : `<span class="scraper-entry-filename">${escapeHtml(entry.name || '--')}</span>`;
+            ? `<button type="button" class="scraper-entry-link" data-scraper-entry-enter="${escapeHtml(entry.id)}" title="${entryTitle}" ${state.loading || state.navigationBusy ? 'disabled' : ''}>${entryName}</button>`
+            : `<span class="scraper-entry-filename" title="${entryTitle}">${entryName}</span>`;
         return `
             <div class="scraper-entry-row ${selected ? 'is-selected' : ''}" data-scraper-entry-id="${escapeHtml(entry.id)}">
                 <div class="scraper-entry-name-cell">
@@ -330,11 +526,10 @@ function renderEntries() {
                     <span class="scraper-entry-icon ${entry.is_dir ? 'is-folder' : 'is-file'}">${getEntryIcon(entry.is_dir)}</span>
                     <div class="scraper-entry-main">
                         ${nameHtml}
-                        <span>${escapeHtml(entry.path || entry.name || '')}</span>
                     </div>
                 </div>
-                <span>${entry.is_dir ? '--' : escapeHtml(formatFileSize(entry.size))}</span>
                 <span>${escapeHtml(formatTimeText(entry.modified_at))}</span>
+                <span>${entry.is_dir ? '--' : escapeHtml(formatFileSize(entry.size))}</span>
             </div>
         `;
     });
@@ -348,6 +543,136 @@ function getTmdbDisplayTitle(binding = state.tmdb) {
     return `${title || '--'}${year ? ` (${year})` : ''}`;
 }
 
+function getTmdbSeasonCount(binding = state.tmdb) {
+    const item = binding && typeof binding === 'object' ? binding : {};
+    const map = item.tmdb_season_episode_map || item.season_episode_map || {};
+    const mapSeasons = map && typeof map === 'object'
+        ? Object.keys(map).map(value => Number(value || 0)).filter(value => value > 0)
+        : [];
+    return Math.max(0, Number(item.tmdb_total_seasons || item.total_seasons || 0) || 0, ...mapSeasons);
+}
+
+function syncSeasonControl() {
+    const field = $('scraper-season-field');
+    const input = $('scraper-season');
+    if (!field || !input) return;
+    const isTv = (state.tmdb?.tmdb_media_type || state.tmdb?.media_type || $('scraper-manual-media-type')?.value) === 'tv';
+    field.classList.toggle('hidden', !isTv);
+    if (!isTv) return;
+    const seasonCount = getTmdbSeasonCount();
+    const current = Math.max(1, Number(input.value || 1) || 1);
+    if (seasonCount > 0) {
+        input.max = String(seasonCount);
+        if (current > seasonCount) input.value = String(seasonCount);
+    } else {
+        input.max = '99';
+    }
+}
+
+function syncFileInfoControls() {
+    const enabled = !!$('scraper-preserve-file-info')?.checked;
+    document.querySelectorAll('[data-scraper-tag]').forEach(input => {
+        input.disabled = !enabled;
+        input.closest('label')?.classList.toggle('is-disabled', !enabled);
+    });
+}
+
+function syncFolderRenameControl() {
+    const input = $('scraper-rename-selected-folders');
+    const label = $('scraper-rename-selected-folders-wrap');
+    if (!input) return;
+    const hasSelectedFolder = getSelectedEntries().some(item => !!item.is_dir);
+    input.disabled = !hasSelectedFolder;
+    if (!hasSelectedFolder) {
+        input.checked = false;
+        input.dataset.autoDisabled = '1';
+    } else if (input.dataset.autoDisabled === '1') {
+        input.checked = true;
+        delete input.dataset.autoDisabled;
+    }
+    label?.classList.toggle('is-disabled', !hasSelectedFolder);
+    if (label) {
+        label.title = hasSelectedFolder ? '' : '只有选中整个文件夹时才可启用文件夹重命名';
+    }
+}
+
+function getDisplayEntries() {
+    const sortKey = ['name', 'size', 'modified_at'].includes(state.entrySort?.key) ? state.entrySort.key : 'name';
+    const direction = state.entrySort?.direction === 'desc' ? -1 : 1;
+    return state.entries.slice().sort((a, b) => {
+        if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
+        let result = 0;
+        if (sortKey === 'size') {
+            result = (Number(a.size || 0) || 0) - (Number(b.size || 0) || 0);
+        } else if (sortKey === 'modified_at') {
+            result = parseEntryModifiedMs(a.modified_at) - parseEntryModifiedMs(b.modified_at);
+        }
+        if (result === 0) {
+            result = String(a.name || '').localeCompare(String(b.name || ''), 'zh-Hans-CN');
+        }
+        return result * direction;
+    });
+}
+
+function renderSortButton(key, label) {
+    const active = state.entrySort?.key === key;
+    const direction = active && state.entrySort?.direction === 'desc' ? 'desc' : 'asc';
+    const nextDirection = active && direction === 'asc' ? 'desc' : 'asc';
+    const indicator = active ? (direction === 'asc' ? '↑' : '↓') : '';
+    return `
+        <button
+            type="button"
+            class="scraper-sort-button ${active ? 'is-active' : ''}"
+            data-scraper-sort="${escapeHtml(key)}"
+            aria-label="按${escapeHtml(label)}${nextDirection === 'asc' ? '升序' : '降序'}排序"
+            aria-pressed="${active ? 'true' : 'false'}"
+        >
+            <span>${escapeHtml(label)}</span>
+            <span class="scraper-sort-indicator" aria-hidden="true">${escapeHtml(indicator)}</span>
+        </button>
+    `;
+}
+
+function setEntrySort(key) {
+    const normalized = ['name', 'size', 'modified_at'].includes(String(key || '')) ? String(key) : 'name';
+    if (state.entrySort.key === normalized) {
+        state.entrySort = {
+            key: normalized,
+            direction: state.entrySort.direction === 'asc' ? 'desc' : 'asc',
+        };
+    } else {
+        state.entrySort = { key: normalized, direction: 'asc' };
+    }
+    renderEntries();
+}
+
+function renderKeywordSuggestions(identifyResult = {}) {
+    const keywords = Array.isArray(identifyResult.keywords) ? identifyResult.keywords : [];
+    if (!keywords.length) return '';
+    return `
+        <div class="scraper-keyword-group">
+            ${keywords.slice(0, 5).map(item => `
+                <button
+                    type="button"
+                    class="scraper-keyword-chip"
+                    data-scraper-keyword="${escapeHtml(item.keyword || '')}"
+                    title="${escapeHtml(item.source || '识别关键词')}"
+                >
+                    ${escapeHtml(item.keyword || '--')}
+                </button>
+            `).join('')}
+        </div>
+    `;
+}
+
+function renderPoster(item = {}) {
+    const posterUrl = String(item.poster_url || '').trim();
+    if (posterUrl) {
+        return `<img class="scraper-result-poster" src="${escapeHtml(posterUrl)}" alt="" loading="lazy">`;
+    }
+    return '<div class="scraper-result-poster is-empty">无封面</div>';
+}
+
 function renderIdentify() {
     const summary = $('scraper-identify-summary');
     const candidates = $('scraper-candidate-list');
@@ -358,35 +683,23 @@ function renderIdentify() {
             summary.textContent = '正在识别 TMDB 信息...';
         } else if (state.tmdb) {
             const typeLabel = (state.tmdb.tmdb_media_type || state.tmdb.media_type) === 'tv' ? '电视剧' : '电影';
-            summary.innerHTML = `已选择 <strong>${escapeHtml(typeLabel)} #${escapeHtml(String(state.tmdb.tmdb_id || state.tmdb.id || 0))}</strong>：${escapeHtml(getTmdbDisplayTitle())}`;
+            const seasonText = typeLabel === '电视剧' ? ` / 第 ${escapeHtml(String(Math.max(1, Number($('scraper-season')?.value || 1) || 1)))} 季` : '';
+            summary.innerHTML = `已绑定 <strong>${escapeHtml(typeLabel)} #${escapeHtml(String(state.tmdb.tmdb_id || state.tmdb.id || 0))}</strong>：${escapeHtml(getTmdbDisplayTitle())}${seasonText}`;
         } else if (identifyResult.msg) {
             summary.textContent = identifyResult.msg;
         } else if (identifyResult.query) {
-            summary.textContent = `自动识别关键词：${identifyResult.query}`;
+            summary.textContent = `已根据选中条目推荐关键词，请点击关键词填入 TMDB 搜索框后手动搜索绑定。`;
         } else {
             summary.textContent = '等待选择文件或文件夹。';
         }
     }
     if (candidates) {
-        const items = Array.isArray(identifyResult.candidates || identifyResult.items) ? (identifyResult.candidates || identifyResult.items) : [];
         if (state.identifyBusy) {
             candidates.innerHTML = '<div class="scraper-empty-small">识别中...</div>';
-        } else if (!items.length) {
+        } else if (!Array.isArray(identifyResult.keywords) || !identifyResult.keywords.length) {
             candidates.innerHTML = '';
         } else {
-            candidates.innerHTML = items.slice(0, 5).map((item, index) => {
-                const typeLabel = item.media_type === 'tv' ? '电视剧' : '电影';
-                const confidence = Number(item.confidence || 0) || 0;
-                return `
-                    <div class="scraper-candidate-row">
-                        <div>
-                            <strong>${escapeHtml(item.title || '--')}</strong>
-                            <span>${escapeHtml(typeLabel)}${item.year ? ` / ${escapeHtml(item.year)}` : ''} / 置信度 ${escapeHtml(String(confidence))}</span>
-                        </div>
-                        <button type="button" class="scraper-compact-btn" data-scraper-candidate-index="${index}">选择</button>
-                    </div>
-                `;
-            }).join('');
+            candidates.innerHTML = renderKeywordSuggestions(identifyResult);
         }
     }
     if (manualResults) {
@@ -399,9 +712,11 @@ function renderIdentify() {
                 const typeLabel = item.media_type === 'tv' ? '电视剧' : '电影';
                 return `
                     <div class="scraper-manual-result">
+                        ${renderPoster(item)}
                         <div class="scraper-manual-result-main">
                             <strong>${escapeHtml(item.title || '--')}</strong>
-                            <span>${escapeHtml(typeLabel)}${item.year ? ` / ${escapeHtml(item.year)}` : ''}${item.vote_average ? ` / ${escapeHtml(String(item.vote_average))}` : ''}</span>
+                            <span>${escapeHtml(typeLabel)}${item.year ? ` / ${escapeHtml(item.year)}` : ''}${item.vote_average ? ` / 评分 ${escapeHtml(String(item.vote_average))}` : ''}</span>
+                            ${item.overview ? `<p>${escapeHtml(item.overview)}</p>` : ''}
                         </div>
                         <button type="button" class="scraper-compact-btn" data-scraper-manual-index="${index}">绑定</button>
                     </div>
@@ -417,6 +732,9 @@ function renderIdentify() {
     if (mediaSelect && identifyResult.media_type) {
         mediaSelect.value = identifyResult.media_type === 'tv' ? 'tv' : 'movie';
     }
+    syncSeasonControl();
+    syncFileInfoControls();
+    syncFolderRenameControl();
 }
 
 function collectOptions() {
@@ -427,6 +745,9 @@ function collectOptions() {
     return {
         title_language: String($('scraper-title-language')?.value || 'zh'),
         season: Math.max(1, Number($('scraper-season')?.value || 1) || 1),
+        include_tmdb_id: !!$('scraper-include-tmdb-id')?.checked,
+        rename_selected_folders: !$('scraper-rename-selected-folders')?.disabled && !!$('scraper-rename-selected-folders')?.checked,
+        preserve_file_info: !!$('scraper-preserve-file-info')?.checked,
         preserve_tags: preserveTags,
     };
 }
@@ -436,10 +757,36 @@ function renderPlan() {
     const list = $('scraper-plan-list');
     const executeBtn = $('scraper-execute-btn');
     const plan = state.plan || null;
+    const selectedReadyCount = getSelectedReadyPlanCount();
+    const selectedEntries = getSelectedEntries();
+    const hasBinding = !!(state.tmdb && Number(state.tmdb.tmdb_id || state.tmdb.id || 0) > 0);
+    const inlineBuildBtn = $('scraper-inline-build-plan-btn');
+    if (inlineBuildBtn) {
+        const showBuild = selectedEntries.length > 0 && hasBinding && !getPlanActions().length;
+        inlineBuildBtn.classList.toggle('hidden', !showBuild);
+        inlineBuildBtn.disabled = state.planBusy || !showBuild;
+        inlineBuildBtn.classList.toggle('btn-disabled', state.planBusy || !showBuild);
+        inlineBuildBtn.textContent = state.planBusy ? '生成中...' : '生成预览';
+    }
+    const clearPlanBtn = $('scraper-clear-plan-btn');
+    if (clearPlanBtn) {
+        const showClear = getPlanActions().length > 0;
+        clearPlanBtn.classList.toggle('hidden', !showClear);
+        clearPlanBtn.disabled = state.executeBusy || !showClear;
+        clearPlanBtn.classList.toggle('btn-disabled', state.executeBusy || !showClear);
+    }
+    const inlineExecuteBtn = $('scraper-inline-execute-btn');
+    if (inlineExecuteBtn) {
+        const showExecute = getPlanActions().length > 0;
+        inlineExecuteBtn.classList.toggle('hidden', !showExecute);
+        inlineExecuteBtn.disabled = state.executeBusy || selectedReadyCount <= 0;
+        inlineExecuteBtn.classList.toggle('btn-disabled', state.executeBusy || selectedReadyCount <= 0);
+        inlineExecuteBtn.textContent = state.executeBusy ? '提交中...' : `执行重命名 ${selectedReadyCount} 项`;
+    }
     if (executeBtn) {
-        executeBtn.disabled = state.executeBusy || !plan?.ready;
-        executeBtn.classList.toggle('btn-disabled', state.executeBusy || !plan?.ready);
-        executeBtn.textContent = state.executeBusy ? '提交中...' : '确认执行';
+        executeBtn.disabled = state.executeBusy || selectedReadyCount <= 0;
+        executeBtn.classList.toggle('btn-disabled', state.executeBusy || selectedReadyCount <= 0);
+        executeBtn.textContent = state.executeBusy ? '提交中...' : `执行重命名 ${selectedReadyCount} 项`;
     }
     if (!summary || !list) return;
     if (state.planBusy) {
@@ -456,27 +803,15 @@ function renderPlan() {
     const ready = Number(plan.ready_count || 0);
     const issues = Array.isArray(plan.issues) ? plan.issues : [];
     summary.innerHTML = `
-        <span class="${plan.ready ? 'scraper-ok-text' : 'scraper-warn-text'}">${plan.ready ? '可执行' : '需要处理'}</span>
-        <span> / ${escapeHtml(String(ready))} / ${escapeHtml(String(total))} 项可执行${issues.length ? ` / ${escapeHtml(String(issues.length))} 个提示` : ''}</span>
+        <span class="${ready > 0 ? 'scraper-ok-text' : 'scraper-warn-text'}">${ready > 0 ? '可执行' : '需要处理'}</span>
+        <span> / 已勾选 ${escapeHtml(String(selectedReadyCount))} 项，${escapeHtml(String(ready))} / ${escapeHtml(String(total))} 项可执行${issues.length ? ` / ${escapeHtml(String(issues.length))} 个提示` : ''}</span>
     `;
     const actions = Array.isArray(plan.actions) ? plan.actions : [];
     if (!actions.length) {
         list.innerHTML = '<div class="scraper-empty-row">没有可改名文件。</div>';
         return;
     }
-    list.innerHTML = actions.map((action) => {
-        const readyClass = action.ready ? 'is-ready' : 'is-blocked';
-        return `
-            <div class="scraper-plan-row ${readyClass}">
-                <div class="scraper-plan-status">${action.ready ? 'Ready' : 'Blocked'}</div>
-                <div class="scraper-plan-paths">
-                    <div><span>旧</span>${escapeHtml(action.old_path || action.old_name || '--')}</div>
-                    <div><span>新</span>${escapeHtml(action.new_path || '--')}</div>
-                    ${action.issue ? `<div class="scraper-plan-issue">${escapeHtml(action.issue)}</div>` : ''}
-                </div>
-            </div>
-        `;
-    }).join('');
+    list.innerHTML = '';
 }
 
 function getJobStatusLabel(status) {
@@ -559,6 +894,7 @@ async function loadEntries({ force = false, keepSearch = true } = {}) {
         state.entries = (Array.isArray(data.entries) ? data.entries : []).map(enrichEntry);
         state.summary = data.summary || { folder_count: 0, file_count: 0 };
         clearSelection();
+        resetIdentifyContext({ resetInputs: true });
     } catch (error) {
         state.entries = [];
         state.summary = { folder_count: 0, file_count: 0 };
@@ -579,34 +915,54 @@ async function switchProvider(provider) {
     $('scraper-search-input').value = '';
     clearSelection();
     clearPlan();
-    state.identifyResult = null;
-    state.tmdb = null;
-    state.manualResults = [];
+    resetIdentifyContext({ resetInputs: true });
+    closeIdentifyPanel();
     renderProviderTabs();
     renderIdentify();
     await loadEntries();
 }
 
 async function enterFolder(entryId) {
+    if (state.loading || state.navigationBusy) return;
     const entry = state.entries.find(item => item.id === String(entryId || ''));
     if (!entry || !entry.is_dir) return;
-    state.cid = normalizeCid(entry.cid || entry.id);
-    state.trail = state.trail.concat([{ id: state.cid, name: entry.name }]);
-    state.search = '';
-    $('scraper-search-input').value = '';
-    clearPlan();
-    await loadEntries({ keepSearch: false });
+    const nextCid = normalizeCid(entry.cid || entry.id);
+    if (!nextCid || normalizeCid(state.cid) === nextCid) return;
+    state.navigationBusy = true;
+    try {
+        state.cid = nextCid;
+        state.trail = state.trail.concat([{ id: state.cid, name: entry.name }]);
+        state.search = '';
+        $('scraper-search-input').value = '';
+        clearPlan();
+        resetIdentifyContext({ resetInputs: true });
+        closeIdentifyPanel();
+        await loadEntries({ keepSearch: false });
+    } finally {
+        state.navigationBusy = false;
+        renderEntries();
+    }
 }
 
 async function goTrail(index) {
+    if (state.loading || state.navigationBusy) return;
     const targetIndex = Math.max(0, Number(index || 0) || 0);
     const target = state.trail[targetIndex] || state.trail[0];
-    state.trail = state.trail.slice(0, targetIndex + 1);
-    state.cid = normalizeCid(target.id);
-    state.search = '';
-    $('scraper-search-input').value = '';
-    clearPlan();
-    await loadEntries({ keepSearch: false });
+    if (normalizeCid(target.id) === normalizeCid(state.cid) && targetIndex === state.trail.length - 1) return;
+    state.navigationBusy = true;
+    try {
+        state.trail = state.trail.slice(0, targetIndex + 1);
+        state.cid = normalizeCid(target.id);
+        state.search = '';
+        $('scraper-search-input').value = '';
+        clearPlan();
+        resetIdentifyContext({ resetInputs: true });
+        closeIdentifyPanel();
+        await loadEntries({ keepSearch: false });
+    } finally {
+        state.navigationBusy = false;
+        renderEntries();
+    }
 }
 
 async function createFolder() {
@@ -631,8 +987,8 @@ async function createFolder() {
 
 async function renameSelected() {
     const selected = getSelectedEntries();
-    if (selected.length !== 1) {
-        showToast('请选择一个条目进行重命名', { tone: 'warn', duration: 2400, placement: 'top-center' });
+    if (selected.length !== 1 || !selected[0]?.is_dir) {
+        showToast('请选择一个文件夹进行重命名', { tone: 'warn', duration: 2400, placement: 'top-center' });
         return;
     }
     const target = selected[0];
@@ -733,11 +1089,17 @@ async function identifySelected() {
         showToast('请先选择要识别的文件或文件夹', { tone: 'warn', duration: 2400, placement: 'top-center' });
         return;
     }
+    const selectionKey = getSelectionKey(entries);
+    if ((state.identifyResult || state.tmdb) && state.identifySelectionKey === selectionKey) {
+        openIdentifyPanel();
+        renderIdentify();
+        return;
+    }
     state.identifyBusy = true;
-    state.identifyResult = null;
-    state.tmdb = null;
-    state.manualResults = [];
+    resetIdentifyContext({ resetInputs: true });
+    state.identifySelectionKey = selectionKey;
     clearPlan();
+    openIdentifyPanel();
     renderIdentify();
     try {
         const data = await window.MediaHubApi.postJson('/scraper/identify', {
@@ -745,15 +1107,20 @@ async function identifySelected() {
             entries,
         });
         state.identifyResult = data || {};
-        const binding = data?.binding && Number(data.binding.tmdb_id || 0) > 0 ? data.binding : null;
-        state.tmdb = binding;
-        showToast(binding ? '已自动绑定 TMDB 条目' : '已完成初步识别，请选择 TMDB 条目', {
-            tone: binding ? 'success' : 'info',
+        state.tmdb = null;
+        state.identifySelectionKey = selectionKey;
+        const manualInput = $('scraper-manual-query');
+        if (manualInput && data?.query) manualInput.value = String(data.query || '');
+        const mediaSelect = $('scraper-manual-media-type');
+        if (mediaSelect && data?.media_type) mediaSelect.value = data.media_type === 'tv' ? 'tv' : 'movie';
+        showToast('已推荐关键词，请手动搜索并绑定 TMDB 条目', {
+            tone: 'info',
             duration: 2600,
             placement: 'top-center',
         });
     } catch (error) {
         state.identifyResult = { msg: error.message || '识别失败' };
+        state.identifySelectionKey = selectionKey;
         showToast(`识别失败：${error.message || '未知错误'}`, { tone: 'error', duration: 3400, placement: 'top-center' });
     } finally {
         state.identifyBusy = false;
@@ -774,9 +1141,16 @@ async function bindTmdbCandidate(item) {
         if (state.tmdb?.tmdb_media_type) {
             const mediaSelect = $('scraper-manual-media-type');
             if (mediaSelect) mediaSelect.value = state.tmdb.tmdb_media_type === 'tv' ? 'tv' : 'movie';
+            const seasonInput = $('scraper-season');
+            if (seasonInput && state.tmdb.tmdb_media_type === 'tv') {
+                const maxSeason = getTmdbSeasonCount(state.tmdb);
+                seasonInput.value = String(Math.min(Math.max(1, Number(seasonInput.value || 1) || 1), maxSeason || 99));
+            }
         }
         clearPlan();
+        state.identifySelectionKey = getSelectionKey();
         renderIdentify();
+        renderSelection();
         showToast(`已绑定 TMDB：${getTmdbDisplayTitle()}`, { tone: 'success', duration: 2600, placement: 'top-center' });
     } catch (error) {
         showToast(`读取 TMDB 详情失败：${error.message || '未知错误'}`, { tone: 'error', duration: 3400, placement: 'top-center' });
@@ -830,22 +1204,36 @@ async function buildPlan() {
             options: collectOptions(),
         });
         state.plan = data;
-        showToast(data.ready ? '预览已生成，可确认执行' : '预览存在冲突，请处理后再执行', {
-            tone: data.ready ? 'success' : 'warn',
+        state.planSelections = new Set(
+            (Array.isArray(data.actions) ? data.actions : [])
+                .filter(action => action.ready)
+                .map(action => Number(action.action_index || 0) || 0)
+                .filter(Boolean)
+        );
+        showToast(Number(data.ready_count || 0) > 0 ? '预览已生成，请勾选确认后执行' : '预览没有可执行项，请处理冲突后再试', {
+            tone: Number(data.ready_count || 0) > 0 ? 'success' : 'warn',
             duration: 2800,
             placement: 'top-center',
         });
+        closeIdentifyPanel();
     } catch (error) {
         showToast(`生成预览失败：${error.message || '未知错误'}`, { tone: 'error', duration: 3600, placement: 'top-center' });
     } finally {
         state.planBusy = false;
         renderPlan();
+        renderEntries();
     }
 }
 
 async function executePlan() {
-    if (!state.plan?.ready) return;
-    const ok = await showConfirm('确认按当前预览执行重命名和移动吗？', {
+    if (!state.plan) return;
+    const selectedActions = (Array.isArray(state.plan.actions) ? state.plan.actions : [])
+        .filter(action => action.ready && state.planSelections.has(Number(action.action_index || 0)));
+    if (!selectedActions.length) {
+        showToast('请先勾选要执行的预览项', { tone: 'warn', duration: 2400, placement: 'top-center' });
+        return;
+    }
+    const ok = await showConfirm(`确认执行已勾选的 ${selectedActions.length} 项重命名和移动吗？`, {
         title: '确认执行',
         confirmText: '执行',
     });
@@ -853,8 +1241,27 @@ async function executePlan() {
     state.executeBusy = true;
     renderPlan();
     try {
-        const data = await window.MediaHubApi.postJson('/scraper/jobs/create', { plan: state.plan });
+        const data = await window.MediaHubApi.postJson('/scraper/jobs/create', {
+            plan: {
+                ...state.plan,
+                actions: selectedActions,
+                ready: true,
+                ready_count: selectedActions.length,
+                total_count: selectedActions.length,
+                issues: [],
+            },
+        });
         showToast(`刮削任务已提交 #${data.job_id}`, { tone: 'success', duration: 2600, placement: 'top-center' });
+        if (typeof window.refreshTaskCenterJobsOnly === 'function') {
+            await window.refreshTaskCenterJobsOnly({ preferTab: 'scraper' });
+        } else if (typeof window.fetchScraperJobsState === 'function') {
+            await window.fetchScraperJobsState({ silent: true });
+        }
+        if (typeof window.scheduleResourcePolling === 'function') {
+            window.scheduleResourcePolling(1000);
+        }
+        state.plan = null;
+        state.planSelections.clear();
         await refreshJobs();
         scheduleJobsPoll();
         await loadEntries({ force: true });
@@ -870,7 +1277,7 @@ async function refreshJobs() {
     state.jobsBusy = true;
     renderJobs();
     try {
-        const data = await window.MediaHubApi.getJson('/scraper/jobs/state?limit=20');
+        const data = await window.MediaHubApi.getJson('/scraper/jobs/state?limit=5');
         state.jobs = Array.isArray(data.jobs) ? data.jobs : [];
     } catch (error) {
         showToast(`读取任务记录失败：${error.message || '未知错误'}`, { tone: 'error', duration: 3200, placement: 'top-center' });
@@ -924,7 +1331,7 @@ function setSelected(entryId, checked) {
     } else {
         state.selected.delete(id);
     }
-    clearPlan();
+    invalidateSelectionContext();
     renderEntries();
 }
 
@@ -934,11 +1341,35 @@ function toggleAll(checked) {
     } else {
         clearSelection();
     }
-    clearPlan();
+    invalidateSelectionContext();
     renderEntries();
 }
 
+function selectRangeBetweenChecked() {
+    if (getPlanActions().length > 0) return;
+    const entries = getDisplayEntries();
+    const selectedIndexes = entries
+        .map((entry, index) => state.selected.has(entry.id) ? index : -1)
+        .filter(index => index >= 0);
+    if (selectedIndexes.length < 2) {
+        showToast('请先勾选区间的起点和终点', { tone: 'warn', duration: 2400, placement: 'top-center' });
+        return;
+    }
+    const start = Math.min(...selectedIndexes);
+    const end = Math.max(...selectedIndexes);
+    entries.slice(start, end + 1).forEach(entry => {
+        state.selected.set(entry.id, entry);
+    });
+    invalidateSelectionContext();
+    renderEntries();
+    showToast(`已补齐选择 ${end - start + 1} 项`, { tone: 'success', duration: 2200, placement: 'top-center' });
+}
+
 function handleClick(event) {
+    if (event.target?.id === 'scraper-identify-panel') {
+        closeIdentifyPanel();
+        return;
+    }
     const providerButton = event.target.closest('[data-scraper-provider]');
     if (providerButton) {
         void switchProvider(providerButton.dataset.scraperProvider);
@@ -954,10 +1385,20 @@ function handleClick(event) {
         void enterFolder(entryButton.dataset.scraperEntryEnter);
         return;
     }
-    const candidateButton = event.target.closest('[data-scraper-candidate-index]');
-    if (candidateButton) {
-        const items = state.identifyResult?.candidates || state.identifyResult?.items || [];
-        void bindTmdbCandidate(items[Number(candidateButton.dataset.scraperCandidateIndex || 0)]);
+    const sortButton = event.target.closest('[data-scraper-sort]');
+    if (sortButton) {
+        setEntrySort(sortButton.dataset.scraperSort);
+        return;
+    }
+    const keywordButton = event.target.closest('[data-scraper-keyword]');
+    if (keywordButton) {
+        const keyword = String(keywordButton.dataset.scraperKeyword || '').trim();
+        const input = $('scraper-manual-query');
+        if (input && keyword) {
+            input.value = keyword;
+            input.focus();
+            input.select();
+        }
         return;
     }
     const manualButton = event.target.closest('[data-scraper-manual-index]');
@@ -979,12 +1420,26 @@ function handleClick(event) {
         void loadEntries();
     }
     if (action === 'create-folder') void createFolder();
+    if (action === 'select-range') selectRangeBetweenChecked();
     if (action === 'rename-selected') void renameSelected();
     if (action === 'prepare-move') prepareMove();
     if (action === 'delete-selected') void deleteSelected();
     if (action === 'identify') void identifySelected();
+    if (action === 'open-identify') {
+        if (state.identifyResult || state.tmdb) {
+            openIdentifyPanel();
+            renderIdentify();
+        } else {
+            void identifySelected();
+        }
+    }
+    if (action === 'close-identify') closeIdentifyPanel();
     if (action === 'manual-search') void manualSearchTmdb();
     if (action === 'build-plan') void buildPlan();
+    if (action === 'clear-plan') {
+        clearPlan();
+        renderSelection();
+    }
     if (action === 'execute-plan') void executePlan();
     if (action === 'refresh-jobs') void refreshJobs();
     if (action === 'move-here') void moveHere();
@@ -1004,9 +1459,39 @@ function handleChange(event) {
         toggleAll(!!event.target.checked);
         return;
     }
-    if (event.target?.matches('[data-scraper-tag], #scraper-title-language, #scraper-season')) {
+    const planCheck = event.target.closest('[data-scraper-plan-check]');
+    if (planCheck) {
+        const index = Number(planCheck.dataset.scraperPlanCheck || 0) || 0;
+        if (index > 0) {
+            if (planCheck.checked) {
+                state.planSelections.add(index);
+            } else {
+                state.planSelections.delete(index);
+            }
+            renderPlan();
+            renderSelection();
+        }
+        return;
+    }
+    if (event.target?.id === 'scraper-manual-media-type') {
+        syncSeasonControl();
+        return;
+    }
+    if (event.target?.id === 'scraper-preserve-file-info') {
+        syncFileInfoControls();
+        clearPlan();
+        return;
+    }
+    if (event.target?.matches('[data-scraper-tag], #scraper-title-language, #scraper-season, #scraper-include-tmdb-id, #scraper-rename-selected-folders')) {
         clearPlan();
     }
+}
+
+function handleGlobalKeydown(event) {
+    if (event.key !== 'Escape') return;
+    const panel = $('scraper-identify-panel');
+    if (!panel || panel.classList.contains('hidden')) return;
+    closeIdentifyPanel();
 }
 
 function bindEvents() {
@@ -1015,6 +1500,7 @@ function bindEvents() {
     root.dataset.scraperBound = '1';
     root.addEventListener('click', handleClick);
     root.addEventListener('change', handleChange);
+    document.addEventListener('keydown', handleGlobalKeydown);
     $('scraper-search-input')?.addEventListener('keydown', (event) => {
         if (event.key !== 'Enter' || event.isComposing) return;
         state.search = String(event.target.value || '').trim();

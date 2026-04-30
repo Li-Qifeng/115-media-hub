@@ -18,7 +18,6 @@ from ..providers.quark import (
     move_quark_entries,
     rename_quark_entry,
 )
-from ..providers.tmdb import build_tmdb_task_binding, get_tmdb_media_detail, search_tmdb_media
 from ..services.subscription_episode import _extract_task_episodes_from_file_entry
 from ..subscription_scoring import parse_resource_episode_meta
 
@@ -57,7 +56,7 @@ SCRAPER_TAG_PATTERNS: Dict[str, List[Tuple[str, str]]] = {
         (r"\btruehd\b", "TrueHD"),
         (r"\bdts[-_. ]?hd\b", "DTS-HD"),
         (r"\bdts\b", "DTS"),
-        (r"\bddp\b|\bdd\+?\b", "DDP"),
+        (r"\bddp\d?(?:[._ ]?\d)?\b|\bdd\+?\b", "DDP"),
         (r"\baac\b", "AAC"),
         (r"\bflac\b", "FLAC"),
     ],
@@ -258,11 +257,140 @@ def _clean_search_title(value: str) -> str:
     text = re.sub(r"[\[\(（【].{0,90}?(?:2160p|1080p|720p|4k|uhd|hdr|web[-_. ]?dl|bluray|remux|x26[45]|hevc|aac|dts|atmos|第.+?季|s\d{1,2}e\d{1,4}).{0,90}?[\]\)）】]", " ", text, flags=re.I)
     text = re.sub(r"\b(19|20)\d{2}\b", " ", text)
     text = re.sub(r"\bS\d{1,2}\s*E\d{1,4}\b|\bEP?\s*\d{1,4}\b|\bE\d{1,4}\b", " ", text, flags=re.I)
+    text = re.sub(r"\bS\d{1,2}\b|\bSeason\s*\d{1,2}\b", " ", text, flags=re.I)
     text = re.sub(r"第\s*[零〇一二三四五六七八九十两兩0-9]{1,4}\s*(?:季|集|话|話)", " ", text)
     text = re.sub(r"(?:全|共)\s*\d{1,4}\s*(?:集|话|話)", " ", text)
-    text = re.sub(r"[._\-]+", " ", text)
+    text = re.sub(
+        r"\b(?:2160p|1080p|720p|480p|4k|8k|uhd|web[-_. ]?dl|webrip|blu[-_. ]?ray|bdrip|"
+        r"bdremux|remux|hdtv|hdr10\+?|hdr|dolby[ ._-]?vision|dv|hevc|h\.?265|x265|h\.?264|x264|"
+        r"av1|aac|flac|ddp\d?(?:[._ ]?\d)?|dd\+?|dd\d(?:[._ ]?\d)?|dts[-_. ]?hd|dts|truehd|atmos|10[-_. ]?bit)\b",
+        " ",
+        text,
+        flags=re.I,
+    )
+    text = re.sub(r"\b(?:complete|proper|repack|extended|uncut|internal|multi|chs|cht|gb|big5|简繁|简中|繁中|中字|字幕)\b", " ", text, flags=re.I)
+    text = re.sub(r"[\._\-]+", " ", text)
+    text = re.sub(r"\s*(?:\||/|／|·|•)\s*", " ", text)
     text = re.sub(r"\s+", " ", text).strip(" -_.")
     return text or _strip_extension(value)
+
+
+def _scraper_keyword_key(value: str) -> str:
+    return re.sub(r"[\W_]+", "", str(value or "").lower())
+
+
+def _split_scraper_title_parts(value: str) -> List[str]:
+    text = _strip_extension(value)
+    text = re.sub(r"^[\[\(（【][^\]\)）】]{1,40}[\]\)）】]\s*", " ", text)
+    text = re.sub(r"[\[\(（【][0-9a-f]{8}[\]\)）】]", " ", text, flags=re.I)
+    parts = []
+    for segment in re.split(r"[\\/]+", text):
+        segment = segment.strip()
+        if not segment:
+            continue
+        parts.append(segment)
+        for part in re.split(r"\s+(?:-|–|—|\||/|／|·|•)\s+", segment):
+            part = part.strip()
+            if part and part != segment:
+                parts.append(part)
+    return parts
+
+
+def _common_scraper_prefix(names: List[str]) -> str:
+    cleaned = [_clean_search_title(name) for name in names if str(name or "").strip()]
+    cleaned = [item for item in cleaned if len(_scraper_keyword_key(item)) >= 2]
+    if len(cleaned) < 2:
+        return ""
+    prefix = os.path.commonprefix(cleaned).strip(" -_.")
+    return _clean_search_title(prefix) if len(_scraper_keyword_key(prefix)) >= 2 else ""
+
+
+def build_scraper_keyword_suggestions(selected: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    weighted: Dict[str, Dict[str, Any]] = {}
+
+    def add_candidate(raw: str, score: int, source: str = "") -> None:
+        cleaned = _clean_search_title(raw)
+        key = _scraper_keyword_key(cleaned)
+        if len(key) < 2:
+            return
+        if len(cleaned) > 80:
+            cleaned = cleaned[:80].strip()
+        item = weighted.get(key)
+        if not item:
+            weighted[key] = {"keyword": cleaned, "score": 0, "sources": set()}
+            item = weighted[key]
+        item["score"] += score
+        if source:
+            item["sources"].add(source)
+
+    selected_names: List[str] = []
+    parent_names: List[str] = []
+    for raw in selected:
+        item = raw if isinstance(raw, dict) else {}
+        name = str(item.get("name", "") or "").strip()
+        path = normalize_relative_path(str(item.get("path", "") or ""))
+        parent_path = normalize_relative_path(str(item.get("parent_path", "") or ""))
+        if name:
+            selected_names.append(name)
+            add_candidate(name, 32 if item.get("is_dir") else 18, "选中项")
+        if path:
+            path_parts = [part for part in path.split("/") if part]
+            if len(path_parts) > 1:
+                parent_names.extend(path_parts[:-1])
+            for part in path_parts[-3:]:
+                add_candidate(part, 22 if part != name else 8, "路径")
+        if parent_path:
+            parts = [part for part in parent_path.split("/") if part]
+            parent_names.extend(parts[-2:])
+            for part in parts[-2:]:
+                add_candidate(part, 26, "父文件夹")
+        for part in _split_scraper_title_parts(name or path):
+            add_candidate(part, 10, "拆分")
+
+    common_prefix = _common_scraper_prefix(selected_names)
+    if common_prefix:
+        add_candidate(common_prefix, 34, "公共前缀")
+
+    year = _extract_year_from_names(selected_names + parent_names)
+    enriched: List[Dict[str, Any]] = []
+    for item in weighted.values():
+        keyword = str(item.get("keyword", "") or "").strip()
+        if not keyword:
+            continue
+        score = int(item.get("score", 0) or 0)
+        key = _scraper_keyword_key(keyword)
+        sources = item.get("sources", set()) if isinstance(item.get("sources"), set) else set()
+        if re.fullmatch(r"(?:s\d{1,2}|season\d{1,2}|\d{1,4})", key, re.I):
+            score -= 35
+        if _contains_cjk(keyword):
+            score += 25
+        if "父文件夹" in sources:
+            score += 18
+        if re.search(r"\b(?:ddp|aac|dts|hevc|webdl|bluray|remux|hdr|2160p|1080p)\b", keyword, re.I):
+            score -= 18
+        if year and year not in keyword:
+            score += 4
+        enriched.append(
+            {
+                "keyword": keyword,
+                "score": max(0, score),
+                "source": "、".join(sorted(item.get("sources", set()))) if isinstance(item.get("sources"), set) else "",
+            }
+        )
+        if year and keyword and year not in keyword:
+            enriched.append({"keyword": f"{keyword} {year}", "score": max(0, score - 3), "source": "标题+年份"})
+
+    seen: Set[str] = set()
+    suggestions: List[Dict[str, Any]] = []
+    for item in sorted(enriched, key=lambda payload: int(payload.get("score", 0) or 0), reverse=True):
+        key = _scraper_keyword_key(str(item.get("keyword", "") or ""))
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        suggestions.append(item)
+        if len(suggestions) >= 5:
+            break
+    return suggestions
 
 
 def _extract_year_from_names(names: List[str]) -> str:
@@ -276,6 +404,8 @@ def _extract_year_from_names(names: List[str]) -> str:
 def _looks_like_tv(names: List[str]) -> bool:
     text = " ".join(str(name or "") for name in names)
     if re.search(r"\bS\d{1,2}\s*E\d{1,4}\b|\bEP?\s*\d{1,4}\b", text, re.I):
+        return True
+    if re.search(r"\bS\d{1,2}\b|\bSeason\s*\d{1,2}\b", text, re.I):
         return True
     if re.search(r"第\s*[零〇一二三四五六七八九十两兩0-9]{1,4}\s*(?:季|集|话|話)|(?:全|共)\s*\d{1,4}\s*(?:集|话|話)|完结|完結", text):
         return True
@@ -323,61 +453,22 @@ def identify_scraper_media(payload: Dict[str, Any]) -> Dict[str, Any]:
     selected = payload.get("entries", []) if isinstance(payload.get("entries"), list) else []
     names = [str(item.get("path") or item.get("name") or "").strip() for item in selected if isinstance(item, dict)]
     if not names:
-        return {"ok": True, "provider": provider, "query": "", "media_type": "movie", "year": "", "items": [], "candidates": []}
-    folder_names = [str(item.get("name", "") or "").strip() for item in selected if isinstance(item, dict) and item.get("is_dir")]
-    seed_name = folder_names[0] if len(folder_names) == 1 else names[0]
-    query = _clean_search_title(seed_name)
+        return {"ok": True, "provider": provider, "query": "", "media_type": "movie", "year": "", "keywords": [], "items": [], "candidates": []}
+    keywords = build_scraper_keyword_suggestions([item for item in selected if isinstance(item, dict)])
+    query = str(keywords[0].get("keyword", "") if keywords else _clean_search_title(names[0])).strip()
     media_type = "tv" if _looks_like_tv(names) else "movie"
     year = _extract_year_from_names(names)
-    cfg = get_config()
-    config_error = validate_tmdb_runtime_config(cfg)
-    if config_error:
-        return {
-            "ok": True,
-            "provider": provider,
-            "tmdb_configured": False,
-            "msg": config_error,
-            "query": query,
-            "media_type": media_type,
-            "year": year,
-            "items": [],
-            "candidates": [],
-        }
-    try:
-        items = search_tmdb_media(query, media_type, year, cfg)
-    except Exception as exc:
-        return {
-            "ok": True,
-            "provider": provider,
-            "tmdb_configured": True,
-            "msg": str(exc),
-            "query": query,
-            "media_type": media_type,
-            "year": year,
-            "items": [],
-            "candidates": [],
-        }
-    candidates = []
-    for item in items:
-        candidate = dict(item)
-        candidate["confidence"] = _score_tmdb_candidate(query, year, candidate)
-        candidates.append(candidate)
     binding = {}
-    if candidates and int(candidates[0].get("confidence", 0) or 0) >= 72:
-        try:
-            detail = get_tmdb_media_detail(int(candidates[0].get("id", 0) or 0), str(candidates[0].get("media_type", media_type) or media_type), cfg)
-            binding = build_tmdb_task_binding(detail, media_type=str(candidates[0].get("media_type", media_type) or media_type))
-        except Exception:
-            binding = {}
     return {
         "ok": True,
         "provider": provider,
-        "tmdb_configured": True,
+        "tmdb_configured": not bool(validate_tmdb_runtime_config(get_config())),
         "query": query,
         "media_type": media_type,
         "year": year,
-        "items": candidates,
-        "candidates": candidates,
+        "keywords": keywords,
+        "items": [],
+        "candidates": [],
         "binding": binding,
     }
 
@@ -445,6 +536,25 @@ def _build_tag_suffix(tags: List[str]) -> str:
     return f" [{' '.join(cleaned)}]" if cleaned else ""
 
 
+def _build_scraper_folder_title(title: str, year: str, tmdb: Dict[str, Any], options: Dict[str, Any]) -> str:
+    year_suffix = f" ({year})" if year else ""
+    folder_title = sanitize_scraper_name(f"{title}{year_suffix}")
+    if bool(options.get("include_tmdb_id", False)):
+        tmdb_id = max(0, parse_int(tmdb.get("tmdb_id") or tmdb.get("id") or 0, 0))
+        if tmdb_id > 0:
+            folder_title = sanitize_scraper_name(f"{folder_title} [tmdbid-{tmdb_id}]")
+    return folder_title
+
+
+def _build_scraper_media_titles(tmdb: Dict[str, Any], options: Dict[str, Any], fallback: str = "") -> Tuple[str, str, str]:
+    language = str(options.get("title_language", "auto") or "auto")
+    title = choose_scraper_title(tmdb, language, fallback=_clean_search_title(fallback))
+    year = normalize_tmdb_year(tmdb.get("tmdb_year") or tmdb.get("year") or "") or _extract_year_from_names([fallback])
+    file_title = sanitize_scraper_name(f"{title}{f' ({year})' if year else ''}")
+    folder_title = _build_scraper_folder_title(title, year, tmdb, options)
+    return title, file_title, folder_title
+
+
 def _format_tv_episode_code(task: Dict[str, Any], episodes: Set[int], default_season: int) -> Tuple[str, str]:
     normalized_values = sorted({max(0, int(value or 0)) for value in episodes if max(0, int(value or 0)) > 0})
     if not normalized_values:
@@ -470,14 +580,11 @@ def _format_tv_episode_code(task: Dict[str, Any], episodes: Set[int], default_se
 
 def _build_scraper_target_path(entry: Dict[str, Any], tmdb: Dict[str, Any], options: Dict[str, Any]) -> Tuple[str, str]:
     media_type = normalize_tmdb_media_type(tmdb.get("tmdb_media_type") or tmdb.get("media_type"), "movie")
-    language = str(options.get("title_language", "auto") or "auto")
-    title = choose_scraper_title(tmdb, language, fallback=_clean_search_title(str(entry.get("name", "") or "")))
-    year = normalize_tmdb_year(tmdb.get("tmdb_year") or tmdb.get("year") or "") or _extract_year_from_names([str(entry.get("name", "") or "")])
-    year_suffix = f" ({year})" if year else ""
+    organize_into_media_folder = bool(options.get("organize_into_media_folder", True))
     _, ext = os.path.splitext(str(entry.get("name", "") or ""))
-    tags = extract_scraper_tags(str(entry.get("name", "") or ""), options.get("preserve_tags", {}))
+    tags = extract_scraper_tags(str(entry.get("name", "") or ""), options.get("preserve_tags", {})) if bool(options.get("preserve_file_info", False)) else []
     tag_suffix = _build_tag_suffix(tags)
-    base_title = sanitize_scraper_name(f"{title}{year_suffix}")
+    _, file_title, folder_title = _build_scraper_media_titles(tmdb, options, str(entry.get("name", "") or ""))
     if media_type == "tv":
         task = _build_task_from_tmdb(tmdb, options)
         episodes = _extract_task_episodes_from_file_entry(
@@ -489,10 +596,14 @@ def _build_scraper_target_path(entry: Dict[str, Any], tmdb: Dict[str, Any], opti
         if issue:
             return "", issue
         season_no = max(1, int(episode_code[1:3] or options.get("season") or 1))
-        file_name = sanitize_scraper_name(f"{base_title} - {episode_code}{tag_suffix}") + ext
-        return normalize_relative_path(join_relative_path(base_title, f"Season {season_no:02d}", file_name)), ""
-    file_name = sanitize_scraper_name(f"{base_title}{tag_suffix}") + ext
-    return normalize_relative_path(join_relative_path(base_title, file_name)), ""
+        file_name = sanitize_scraper_name(f"{file_title} - {episode_code}{tag_suffix}") + ext
+        if not organize_into_media_folder:
+            return file_name, ""
+        return normalize_relative_path(join_relative_path(folder_title, f"Season {season_no:02d}", file_name)), ""
+    file_name = sanitize_scraper_name(f"{file_title}{tag_suffix}") + ext
+    if not organize_into_media_folder:
+        return file_name, ""
+    return normalize_relative_path(join_relative_path(folder_title, file_name)), ""
 
 
 def _walk_existing_folder(provider: str, cookie: str, base_cid: str, folder_path: str) -> Tuple[str, bool]:
@@ -586,12 +697,56 @@ def build_scraper_rename_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
     options = payload.get("options") if isinstance(payload.get("options"), dict) else {}
     base_cid = str(payload.get("base_cid", "0") or "0").strip() or "0"
     selected = payload.get("entries", []) if isinstance(payload.get("entries"), list) else []
+    selected_has_folder = any(isinstance(item, dict) and item.get("is_dir") for item in selected)
+    plan_options = dict(options)
+    plan_options["organize_into_media_folder"] = selected_has_folder
     expanded_files, scan_issues = _expand_selected_scraper_entries(provider, cookie, selected)
     actions: List[Dict[str, Any]] = []
     issues: List[str] = list(scan_issues)
     target_paths: Set[str] = set()
-    for index, entry in enumerate(expanded_files):
-        target_path, issue = _build_scraper_target_path(entry, tmdb, options)
+    target_folder_names: Set[str] = set()
+    action_index = 1
+    if selected_has_folder and bool(options.get("rename_selected_folders", True)):
+        _, _, target_folder_name = _build_scraper_media_titles(tmdb, plan_options, "")
+        for raw in selected:
+            item = raw if isinstance(raw, dict) else {}
+            if not item.get("is_dir"):
+                continue
+            entry = _compact_scraper_entry(item, str(item.get("parent_id", "") or base_cid), normalize_relative_path(str(item.get("parent_path", "") or "")))
+            if not entry:
+                continue
+            old_parent_id = str(entry.get("parent_id", "") or base_cid).strip() or "0"
+            old_name = str(entry.get("name", "") or "")
+            old_path = normalize_relative_path(str(entry.get("path", "") or old_name))
+            new_name = target_folder_name
+            if not new_name or new_name == old_name:
+                continue
+            action_issue = ""
+            if new_name in target_folder_names:
+                action_issue = "本批次内目标文件夹重复"
+            target_folder_names.add(new_name)
+            if _target_name_exists(provider, cookie, old_parent_id, new_name, same_entry_id=str(entry.get("id", "") or "")):
+                action_issue = "当前目录中已有同名文件夹"
+            action = {
+                "action_index": action_index,
+                "entry_id": str(entry.get("id", "") or ""),
+                "is_dir": True,
+                "old_parent_id": old_parent_id,
+                "old_name": old_name,
+                "old_path": old_path,
+                "new_parent_id": old_parent_id,
+                "new_name": new_name,
+                "new_path": normalize_relative_path(join_relative_path(normalize_relative_path(str(item.get("parent_path", "") or "")), new_name)),
+                "target_parent_path": "",
+                "issue": action_issue,
+                "ready": bool(new_name and not action_issue),
+            }
+            if action_issue:
+                issues.append(f"{old_name or '--'}：{action_issue}")
+            actions.append(action)
+            action_index += 1
+    for entry in expanded_files:
+        target_path, issue = _build_scraper_target_path(entry, tmdb, plan_options)
         old_parent_id = str(entry.get("parent_id", "") or base_cid).strip() or "0"
         old_path = normalize_relative_path(str(entry.get("path", "") or entry.get("name", "")))
         action_issue = issue
@@ -606,7 +761,7 @@ def build_scraper_rename_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
             if exists and _target_name_exists(provider, cookie, existing_parent_id, new_name, same_entry_id=str(entry.get("id", "") or "")):
                 action_issue = action_issue or "目标目录中已有同名文件"
         action = {
-            "action_index": index + 1,
+            "action_index": action_index,
             "entry_id": str(entry.get("id", "") or ""),
             "is_dir": False,
             "old_parent_id": old_parent_id,
@@ -622,6 +777,7 @@ def build_scraper_rename_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
         if action_issue:
             issues.append(f"{entry.get('name', '--')}：{action_issue}")
         actions.append(action)
+        action_index += 1
     ready_count = sum(1 for item in actions if item.get("ready"))
     return {
         "ok": True,
@@ -633,7 +789,7 @@ def build_scraper_rename_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
         "ready_count": ready_count,
         "total_count": len(actions),
         "tmdb": tmdb,
-        "options": options,
+        "options": plan_options,
     }
 
 
@@ -777,8 +933,22 @@ def get_scraper_jobs_state(limit: int = SCRAPER_JOB_LIMIT_DEFAULT, job_id: int =
         cursor.execute("SELECT * FROM scraper_job_actions WHERE job_id = ? ORDER BY action_index ASC", (row_id,))
         actions = [_serialize_scraper_action_row(action_row) for action_row in cursor.fetchall()]
         jobs.append(_serialize_scraper_job_row(row, actions))
+    cursor.execute("SELECT status, COUNT(1) AS count FROM scraper_jobs GROUP BY status")
+    status_counts = {str(row["status"] or ""): int(row["count"] or 0) for row in cursor.fetchall()}
     conn.close()
-    return {"ok": True, "jobs": jobs}
+    counts = {
+        "total": sum(status_counts.values()),
+        "active": sum(status_counts.get(status, 0) for status in ("pending", "running", "rollback_running")),
+        "completed": sum(status_counts.get(status, 0) for status in ("completed", "rolled_back")),
+        "failed": sum(status_counts.get(status, 0) for status in ("failed", "partial", "rollback_failed")),
+        "rollback": sum(count for status, count in status_counts.items() if status.startswith("rollback") or status == "rolled_back"),
+    }
+    return {
+        "ok": True,
+        "jobs": jobs,
+        "active_jobs": [item for item in jobs if str(item.get("status", "") or "") in {"pending", "running", "rollback_running"}],
+        "job_counts": counts,
+    }
 
 
 def _load_scraper_job(job_id: int) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
@@ -916,9 +1086,21 @@ def run_scraper_job(job_id: int) -> None:
             detail = str(result.get("detail") or "已完成")
             _update_scraper_action(action_id, status=status, status_detail=detail, response_json=safe_json_dumps(result))
             succeeded += 1
+            _update_scraper_job(
+                job_id,
+                status_detail=f"正在执行刮削改名：成功 {succeeded}，失败 {failed}",
+                succeeded_actions=succeeded,
+                failed_actions=failed,
+            )
         except Exception as exc:
             failed += 1
             _update_scraper_action(action_id, status="failed", status_detail=str(exc))
+            _update_scraper_job(
+                job_id,
+                status_detail=f"正在执行刮削改名：成功 {succeeded}，失败 {failed}",
+                succeeded_actions=succeeded,
+                failed_actions=failed,
+            )
     if failed > 0 and succeeded > 0:
         status = "partial"
         detail = f"部分完成：成功 {succeeded}，失败 {failed}"
@@ -956,6 +1138,12 @@ def rollback_scraper_job(job_id: int) -> None:
             if str(action.get("status", "") or "") == "skipped":
                 _update_scraper_action(action_id, rollback_status="skipped", rollback_detail="原动作未产生变化")
                 succeeded += 1
+                _update_scraper_job(
+                    job_id,
+                    status_detail=f"正在回退刮削任务：成功 {succeeded}，失败 {failed}",
+                    rollback_succeeded_actions=succeeded,
+                    rollback_failed_actions=failed,
+                )
                 continue
             result = _execute_move_rename(
                 provider,
@@ -966,9 +1154,21 @@ def rollback_scraper_job(job_id: int) -> None:
             )
             _update_scraper_action(action_id, rollback_status="completed", rollback_detail="已回退", response_json=safe_json_dumps(result))
             succeeded += 1
+            _update_scraper_job(
+                job_id,
+                status_detail=f"正在回退刮削任务：成功 {succeeded}，失败 {failed}",
+                rollback_succeeded_actions=succeeded,
+                rollback_failed_actions=failed,
+            )
         except Exception as exc:
             failed += 1
             _update_scraper_action(action_id, rollback_status="failed", rollback_detail=str(exc))
+            _update_scraper_job(
+                job_id,
+                status_detail=f"正在回退刮削任务：成功 {succeeded}，失败 {failed}",
+                rollback_succeeded_actions=succeeded,
+                rollback_failed_actions=failed,
+            )
     status = "rolled_back" if failed <= 0 else "rollback_failed"
     detail = f"回退完成：成功 {succeeded}" if failed <= 0 else f"回退部分失败：成功 {succeeded}，失败 {failed}"
     _update_scraper_job(

@@ -3,10 +3,16 @@
             const map = {
                 new: '未处理',
                 queued: '已入队',
+                pending: '等待中',
+                running: '执行中',
                 importing: '导入中',
                 submitted: '待刷新',
+                partial: '部分完成',
                 completed: '已完成',
-                failed: '失败'
+                failed: '失败',
+                rollback_running: '回退中',
+                rolled_back: '已回退',
+                rollback_failed: '回退失败',
             };
             return map[normalized] || (normalized || '未处理');
         }
@@ -16,10 +22,16 @@
             const map = {
                 new: 'bg-slate-700 text-slate-100',
                 queued: 'bg-sky-500/15 text-sky-300 border border-sky-500/20',
+                pending: 'bg-sky-500/15 text-sky-300 border border-sky-500/20',
+                running: 'bg-violet-500/15 text-violet-300 border border-violet-500/20',
                 importing: 'bg-violet-500/15 text-violet-300 border border-violet-500/20',
                 submitted: 'bg-amber-500/15 text-amber-300 border border-amber-500/20',
+                partial: 'bg-amber-500/15 text-amber-300 border border-amber-500/20',
                 completed: 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/20',
-                failed: 'bg-red-500/10 text-red-300 border border-red-500/20'
+                failed: 'bg-red-500/10 text-red-300 border border-red-500/20',
+                rollback_running: 'bg-amber-500/15 text-amber-300 border border-amber-500/20',
+                rolled_back: 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/20',
+                rollback_failed: 'bg-red-500/10 text-red-300 border border-red-500/20',
             };
             const cls = map[normalized] || map.new;
             return `<span class="text-[10px] px-3 py-1 rounded-full ${cls}">${escapeHtml(getResourceStatusLabel(normalized))}</span>`;
@@ -2325,6 +2337,7 @@
         }
 
         function hasActiveResourceJobs() {
+            if (typeof hasActiveScraperJobs === 'function' && hasActiveScraperJobs()) return true;
             const resourceModule = tabRuntimeState.tabModuleCache.resource;
             if (resourceModule?.hasActiveResourceJobs) {
                 return resourceModule.hasActiveResourceJobs({

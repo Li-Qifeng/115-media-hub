@@ -434,6 +434,15 @@
             if (action === 'subscribe') openSubscriptionFromResource(resourceId);
         });
         document.getElementById('resource-job-list')?.addEventListener('click', async (e) => {
+            const scraperBtn = e.target.closest('[data-scraper-job-action]');
+            if (scraperBtn) {
+                const action = scraperBtn.dataset.scraperJobAction || '';
+                const jobId = parseInt(scraperBtn.dataset.scraperJobId || '0', 10);
+                if (!jobId) return;
+                if (action === 'toggle') toggleScraperJobExpanded(jobId);
+                if (action === 'rollback') await rollbackScraperJobFromTaskCenter(jobId);
+                return;
+            }
             const btn = e.target.closest('[data-resource-job-action]');
             if (!btn) return;
             const action = btn.dataset.resourceJobAction || '';
@@ -447,10 +456,32 @@
             if (action === 'cancel') await triggerResourceJobCancel(jobId);
             if (action === 'retry') await triggerResourceJobRetry(jobId);
         });
+        document.getElementById('resource-job-type-tabs')?.addEventListener('click', (e) => {
+            const btn = e.target.closest('[data-task-center-tab]');
+            if (!btn) return;
+            const nextTab = String(btn.dataset.taskCenterTab || 'resource').trim() === 'scraper' ? 'scraper' : 'resource';
+            if (taskCenterTab === nextTab) return;
+            taskCenterTab = nextTab;
+            closeResourceJobClearMenu();
+            if (taskCenterTab === 'scraper') {
+                void fetchScraperJobsState();
+            } else {
+                void fetchResourceJobsPage({ status: resourceJobFilter, offset: 0 });
+            }
+            renderResourceJobs();
+            syncResourceJobModalTrigger();
+        });
         document.getElementById('resource-job-filter-tabs')?.addEventListener('click', (e) => {
             const btn = e.target.closest('[data-resource-job-filter]');
             if (!btn) return;
             const nextFilter = String(btn.dataset.resourceJobFilter || 'all').trim() || 'all';
+            if (taskCenterTab === 'scraper') {
+                const normalized = normalizeScraperJobFilter(nextFilter);
+                if (scraperJobFilter === normalized) return;
+                scraperJobFilter = normalized;
+                renderResourceJobs();
+                return;
+            }
             const pageFilter = String(resourceState?.job_pagination?.status || 'all').trim() || 'all';
             if (resourceJobFilter === nextFilter && pageFilter === nextFilter) return;
             resourceJobFilter = nextFilter;
@@ -874,6 +905,9 @@
         syncSettingsSaveDock();
         syncMainTabRowState();
         refreshResourceState();
+        if (typeof fetchScraperJobsState === 'function') {
+            void fetchScraperJobsState({ silent: true });
+        }
         Promise.resolve().then(async () => {
             const initialTab = await readTabFromLocationHash();
             if (initialTab && initialTab !== currentTab) {

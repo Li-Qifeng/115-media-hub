@@ -119,6 +119,11 @@
         let resourceJobModalOpen = false;
         let resourceJobClearMenuOpen = false;
         let resourceJobLoadingMore = false;
+        let taskCenterTab = 'resource';
+        let scraperJobState = { jobs: [], job_counts: {}, active_jobs: [] };
+        let scraperJobFilter = 'all';
+        let scraperJobExpanded = new Set();
+        let scraperJobLoading = false;
         let resourceQuickLinkModalOpen = false;
         let resourceSourceModalOpen = false;
         let resourceSourceImportModalOpen = false;
@@ -1620,6 +1625,8 @@
             try {
                 const keyword = String(document.getElementById('resource-search-input')?.value || resourceState.search || '').trim();
                 const resourceTabVisible = currentTab === 'resource' && !document.hidden;
+                const scraperJobsActive = typeof hasActiveScraperJobs === 'function' && hasActiveScraperJobs();
+                const scraperJobsVisible = resourceJobModalOpen && taskCenterTab === 'scraper';
                 if (resourceTabVisible) {
                     if (isResourceChannelSyncActive()) {
                         await refreshResourceState({ allowSearch: false });
@@ -1628,8 +1635,15 @@
                     } else {
                         await refreshResourceState();
                     }
-                } else if (hasActiveResourceJobs() || !statusStreamHealthy) {
-                    await refreshResourceJobsOnly();
+                    if ((scraperJobsActive || scraperJobsVisible) && typeof fetchScraperJobsState === 'function') {
+                        await fetchScraperJobsState({ silent: true });
+                    }
+                } else if (hasActiveResourceJobs() || scraperJobsVisible || !statusStreamHealthy) {
+                    if (typeof refreshTaskCenterJobsOnly === 'function' && (scraperJobsActive || scraperJobsVisible)) {
+                        await refreshTaskCenterJobsOnly();
+                    } else {
+                        await refreshResourceJobsOnly();
+                    }
                 }
             } finally {
                 resourcePollInFlight = false;
@@ -1650,6 +1664,7 @@
                 void runResourcePollingTick();
             }, Math.max(1000, delay));
         }
+        window.scheduleResourcePolling = scheduleResourcePolling;
 
         function connectStatusStream() {
             if (!window.EventSource) {
