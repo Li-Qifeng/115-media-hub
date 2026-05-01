@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-05-01
+- 优化 NAS + frp 场景下的传输压力，资源页与状态轮询改为轻量快照，SSE 日志尾也进一步缩短。
+
 ## [0.3.5] - 2026-05-01
 - 更新版本号到 0.3.5，为后续改动预留新的发布点。
 

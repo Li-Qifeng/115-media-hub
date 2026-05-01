@@ -86,9 +86,10 @@ export function applyMainState(data, {
     }
 }
 
-export async function refreshMainLogs({ applyMainState } = {}) {
+export async function refreshMainLogs({ applyMainState, compact = false } = {}) {
     try {
-        const data = await window.MediaHubApi.getJson('/logs');
+        const endpoint = compact ? '/logs?compact=1' : '/logs';
+        const data = await window.MediaHubApi.getJson(endpoint);
         if (typeof applyMainState === 'function') {
             await applyMainState(data);
         }

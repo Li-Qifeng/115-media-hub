@@ -50,9 +50,10 @@ export function applySubscriptionState(data, {
     if (typeof renderSubscriptionLogs === 'function') renderSubscriptionLogs();
 }
 
-export async function refreshSubscriptionState({ applySubscriptionState } = {}) {
+export async function refreshSubscriptionState({ applySubscriptionState, compact = false } = {}) {
     try {
-        const data = await window.MediaHubApi.getJson('/subscription/status');
+        const endpoint = compact ? '/subscription/status?compact=1' : '/subscription/status';
+        const data = await window.MediaHubApi.getJson(endpoint);
         if (typeof applySubscriptionState === 'function') applySubscriptionState(data);
     } catch (e) {}
 }

@@ -353,6 +353,7 @@ async def get_resource_state(request: Request) -> Dict[str, Any]:
     job_limit = max(1, min(parse_int(request.query_params.get("job_limit", 20), default=20), 200))
     job_offset = max(0, parse_int(request.query_params.get("job_offset", 0), default=0))
     job_status_filter = normalize_resource_job_status_filter(request.query_params.get("job_status", "all"))
+    compact = request.query_params.get("compact") == "1"
     sync_channels = request.query_params.get("sync") == "1"
     if sync_channels:
         submit_resource_channel_sync(force=False)
@@ -365,6 +366,7 @@ async def get_resource_state(request: Request) -> Dict[str, Any]:
             job_limit=job_limit,
             job_offset=job_offset,
             job_status_filter=job_status_filter,
+            compact=compact,
         )
     finally:
         clear_resource_search_cancel(search_id)

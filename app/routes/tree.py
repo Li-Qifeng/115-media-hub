@@ -25,7 +25,8 @@ async def start_sync(request: Request) -> Dict[str, str]:
 
 @router.get("/logs")
 async def get_logs(request: Request) -> Dict[str, Any]:
-    return build_main_status_payload()
+    compact = request.query_params.get("compact") == "1"
+    return build_main_status_payload(log_limit=UI_STATUS_STREAM_LOG_TAIL_LIMIT if compact else UI_STATUS_LOG_TAIL_LIMIT)
 
 
 @router.post("/logs/clear")

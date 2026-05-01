@@ -1526,9 +1526,9 @@
         function startStatusFallbackPolling() {
             if (statusFallbackTimer) return;
             statusFallbackTimer = window.setInterval(() => {
-                refreshMainLogs();
-                refreshMonitorState();
-                refreshSubscriptionState();
+                refreshMainLogs({ compact: true });
+                refreshMonitorState({ compact: true });
+                refreshSubscriptionState({ compact: true });
                 refreshSign115Status(false);
                 refreshCookieHealthStatus(false);
             }, STATUS_FALLBACK_INTERVAL);
@@ -1632,11 +1632,11 @@
                 const scraperJobsVisible = resourceJobModalOpen && taskCenterTab === 'scraper';
                 if (resourceTabVisible) {
                     if (isResourceChannelSyncActive()) {
-                        await refreshResourceState({ allowSearch: false });
+                        await refreshResourceState({ allowSearch: false, compact: true });
                     } else if (keyword && !isDirectImportInput(keyword)) {
                         await refreshResourceJobsOnly();
                     } else {
-                        await refreshResourceState();
+                        await refreshResourceState({ compact: true });
                     }
                     if ((scraperJobsActive || scraperJobsVisible) && typeof fetchScraperJobsState === 'function') {
                         await fetchScraperJobsState({ silent: true });
@@ -2794,28 +2794,32 @@
             lastMonitorLogSignature = logSignature;
         }
 
-        async function refreshMainLogs() {
+        async function refreshMainLogs({ compact = false } = {}) {
             const taskModule = await loadTaskTabModule();
             if (taskModule?.refreshMainLogs) {
                 await taskModule.refreshMainLogs({
                     applyMainState,
+                    compact,
                 });
                 return;
             }
             try {
-                applyMainState(await window.MediaHubApi.getJson('/logs'));
+                const endpoint = compact ? '/logs?compact=1' : '/logs';
+                applyMainState(await window.MediaHubApi.getJson(endpoint));
             } catch (e) {}
         }
 
-        async function refreshMonitorState() {
+        async function refreshMonitorState({ compact = false } = {}) {
             const monitorModule = await loadMonitorTabModule();
             if (monitorModule?.refreshMonitorState) {
                 await monitorModule.refreshMonitorState({
                     applyMonitorState,
+                    compact,
                 });
                 return;
             }
             try {
-                applyMonitorState(await window.MediaHubApi.getJson('/monitor/status'));
+                const endpoint = compact ? '/monitor/status?compact=1' : '/monitor/status';
+                applyMonitorState(await window.MediaHubApi.getJson(endpoint));
             } catch (e) {}
         }

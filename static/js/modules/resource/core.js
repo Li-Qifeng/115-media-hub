@@ -2090,6 +2090,7 @@
         function applyResourceState(data, options = {}) {
             if (!data) return;
             const deferHeavyRender = !!options.deferHeavyRender;
+            const compactUpdate = !!options.compactUpdate;
             const previousChannelSync = resourceState.channel_sync || {};
             const nextSources = Array.isArray(data.sources) ? data.sources : (resourceState.sources || []);
             const nextQuickLinks = Array.isArray(data.quick_links) ? data.quick_links : (resourceState.quick_links || []);
@@ -2107,12 +2108,18 @@
                 : (resourceState.job_pagination || {});
             const nextSearchSource = normalizeResourceSearchSource(data.search_source || resourceSearchSource || resourceState.search_source || 'tg');
             const nextProviderFilter = normalizeResourceProviderFilter(resourceProviderFilter || resourceState.provider_filter || data.provider_filter || 'all');
-            const nextStats = data.stats || {
-                source_count: nextSources.length,
-                item_count: Number(resourceState?.stats?.item_count || 0),
-                filtered_item_count: nextItems.length,
-                completed_job_count: Number(resourceState?.stats?.completed_job_count ?? 0),
-                failed_job_count: Number(resourceState?.stats?.failed_job_count ?? 0),
+            const currentStats = resourceState.stats && typeof resourceState.stats === 'object' ? resourceState.stats : {};
+            const incomingStats = data.stats && typeof data.stats === 'object' ? data.stats : {};
+            const nextStats = {
+                ...currentStats,
+                ...incomingStats,
+                source_count: Number(incomingStats.source_count ?? currentStats.source_count ?? nextSources.length ?? 0),
+                item_count: Number(incomingStats.item_count ?? currentStats.item_count ?? 0),
+                filtered_item_count: Number(incomingStats.filtered_item_count ?? currentStats.filtered_item_count ?? nextItems.length ?? 0),
+                total_job_count: Number(incomingStats.total_job_count ?? currentStats.total_job_count ?? 0),
+                active_job_count: Number(incomingStats.active_job_count ?? currentStats.active_job_count ?? 0),
+                completed_job_count: Number(incomingStats.completed_job_count ?? currentStats.completed_job_count ?? 0),
+                failed_job_count: Number(incomingStats.failed_job_count ?? currentStats.failed_job_count ?? 0),
             };
             resourceState = {
                 ...resourceState,
@@ -2176,33 +2183,45 @@
             if (typeof handleResourceChannelSyncStateChange === 'function') {
                 handleResourceChannelSyncStateChange(previousChannelSync, resourceState.channel_sync, { refreshOnComplete: false });
             }
-            normalizeResourceSourceBulkSelections();
-            syncResourceChannelPagingState();
-            setResourceQuickLinks(nextQuickLinks, { render: true });
-            void migrateResourceQuickLinksFromStorageIfNeeded(nextQuickLinks);
-            if (selectedResourceId) {
-                const refreshedSelectedItem = findResourceItem(selectedResourceId);
-                if (refreshedSelectedItem) selectedResourceItem = refreshedSelectedItem;
+            if (!compactUpdate) {
+                normalizeResourceSourceBulkSelections();
+                syncResourceChannelPagingState();
+                setResourceQuickLinks(nextQuickLinks, { render: true });
+                void migrateResourceQuickLinksFromStorageIfNeeded(nextQuickLinks);
+                if (selectedResourceId) {
+                    const refreshedSelectedItem = findResourceItem(selectedResourceId);
+                    if (refreshedSelectedItem) selectedResourceItem = refreshedSelectedItem;
+                }
             }
 
             const stats = resourceState.stats || {};
             document.getElementById('resource-source-count').innerText = String(stats.source_count ?? resourceState.sources.length ?? 0);
             document.getElementById('resource-item-count').innerText = String(stats.item_count ?? 0);
             syncResourceJobClearMenuState();
-            renderResourceCookieHint();
-            renderResourceSearchFilters();
-            syncResourceSourceSelect();
-            syncResourceMonitorTaskOptions(document.getElementById('resource_job_savepath')?.value || '');
-            renderResourceFavoriteDirs();
-            renderResourceOnboardingCard();
-            renderResourceSources();
-            if (resourceChannelManageModalOpen) {
-                const nextIndex = getResourceSourceIndexByChannelId(resourceChannelManageChannelId);
-                resourceChannelManageSourceIndex = nextIndex;
-                if (nextIndex < 0) closeResourceChannelManageModal();
-                else syncResourceChannelManageModalState();
+            if (data.cookie_health && typeof data.cookie_health === 'object') {
+                renderResourceCookieHint();
+            } else if (!compactUpdate) {
+                renderResourceCookieHint();
             }
-            scheduleResourceHeavyRender(deferHeavyRender);
+            if (!compactUpdate) {
+                renderResourceSearchFilters();
+                syncResourceSourceSelect();
+                syncResourceMonitorTaskOptions(document.getElementById('resource_job_savepath')?.value || '');
+                renderResourceFavoriteDirs();
+                renderResourceOnboardingCard();
+                renderResourceSources();
+                if (resourceChannelManageModalOpen) {
+                    const nextIndex = getResourceSourceIndexByChannelId(resourceChannelManageChannelId);
+                    resourceChannelManageSourceIndex = nextIndex;
+                    if (nextIndex < 0) closeResourceChannelManageModal();
+                    else syncResourceChannelManageModalState();
+                }
+                scheduleResourceHeavyRender(deferHeavyRender);
+            } else {
+                renderResourceJobs();
+                syncResourceJobModalTrigger();
+                renderResourceBoardHint();
+            }
 
         }
 
@@ -2295,7 +2314,7 @@
             return true;
         }
 
-        async function refreshResourceState({ allowSearch = true, keywordOverride = null, searchId = '', signal = null } = {}) {
+        async function refreshResourceState({ allowSearch = true, keywordOverride = null, searchId = '', signal = null, compact = false } = {}) {
             const resourceModule = await loadResourceTabModule();
             if (resourceModule?.refreshResourceState) {
                 return resourceModule.refreshResourceState({
@@ -2303,6 +2322,7 @@
                     keywordOverride,
                     searchId,
                     signal,
+                    compact,
                     getResourceState: () => resourceState,
                     getResourceJobsStateRequest,
                     isDirectImportInput,
@@ -2326,10 +2346,11 @@
                 params.set('job_status', jobRequest.status);
                 params.set('job_offset', String(jobRequest.offset));
                 params.set('job_limit', String(jobRequest.limit));
+                if (compact && !shouldSearchChannels) params.set('compact', '1');
                 const endpoint = params.toString() ? `/resource/state?${params.toString()}` : '/resource/state';
                 const data = await window.MediaHubApi.getJson(endpoint, signal ? { signal } : undefined);
                 resourceStateHydrated = true;
-                applyResourceState(data);
+                applyResourceState(data, { compactUpdate: !!compact });
                 return data;
             } catch (e) {
                 return null;

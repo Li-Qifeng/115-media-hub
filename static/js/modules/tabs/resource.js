@@ -10,6 +10,7 @@ export async function refreshResourceState({
     keywordOverride = null,
     searchId = '',
     signal = null,
+    compact = false,
     getResourceState,
     getResourceJobsStateRequest,
     isDirectImportInput,
@@ -39,6 +40,7 @@ export async function refreshResourceState({
         params.set('job_status', jobStatus);
         params.set('job_offset', String(jobOffset));
         params.set('job_limit', String(jobLimit));
+        if (compact && !shouldSearchChannels) params.set('compact', '1');
         const endpoint = params.toString() ? `/resource/state?${params.toString()}` : '/resource/state';
         const data = window.MediaHubApi?.getJson
             ? await window.MediaHubApi.getJson(endpoint, signal ? { signal } : undefined)
@@ -49,7 +51,7 @@ export async function refreshResourceState({
             })();
         if (!data) return null;
         if (typeof setResourceStateHydrated === 'function') setResourceStateHydrated(true);
-        if (typeof applyResourceState === 'function') applyResourceState(data);
+        if (typeof applyResourceState === 'function') applyResourceState(data, { compactUpdate: !!compact });
         return data;
     } catch (e) {
         if (e?.name === 'AbortError') throw e;

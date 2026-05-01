@@ -15,7 +15,8 @@ router = APIRouter()
 
 @router.get("/subscription/status")
 async def get_subscription_status(request: Request) -> Dict[str, Any]:
-    return build_subscription_status_payload()
+    compact = request.query_params.get("compact") == "1"
+    return build_subscription_status_payload(compact=compact)
 
 
 @router.get("/subscription/episodes")

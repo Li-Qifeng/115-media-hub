@@ -128,7 +128,8 @@ async def list_monitor_userscript_jobs(request: Request) -> Dict[str, Any]:
 
 @router.get("/monitor/status")
 async def get_monitor_status(request: Request) -> Dict[str, Any]:
-    return build_monitor_status_payload()
+    compact = request.query_params.get("compact") == "1"
+    return build_monitor_status_payload(compact=compact)
 
 
 @router.post("/monitor/logs/clear")

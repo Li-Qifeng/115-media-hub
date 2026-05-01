@@ -1812,16 +1812,18 @@
             hideLockedModal('subscription-episode-modal');
         }
 
-        async function refreshSubscriptionState() {
+        async function refreshSubscriptionState({ compact = false } = {}) {
             const subscriptionModule = await loadSubscriptionTabModule();
             if (subscriptionModule?.refreshSubscriptionState) {
                 await subscriptionModule.refreshSubscriptionState({
                     applySubscriptionState,
+                    compact,
                 });
                 return;
             }
             try {
-                applySubscriptionState(await window.MediaHubApi.getJson('/subscription/status'));
+                const endpoint = compact ? '/subscription/status?compact=1' : '/subscription/status';
+                applySubscriptionState(await window.MediaHubApi.getJson(endpoint));
             } catch (e) {}
         }
 

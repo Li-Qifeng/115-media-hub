@@ -52,9 +52,10 @@ export function applyMonitorState(data, {
     if (typeof afterApply === 'function') afterApply(nextState);
 }
 
-export async function refreshMonitorState({ applyMonitorState } = {}) {
+export async function refreshMonitorState({ applyMonitorState, compact = false } = {}) {
     try {
-        const data = await window.MediaHubApi.getJson('/monitor/status');
+        const endpoint = compact ? '/monitor/status?compact=1' : '/monitor/status';
+        const data = await window.MediaHubApi.getJson(endpoint);
         if (typeof applyMonitorState === 'function') applyMonitorState(data);
     } catch (e) {}
 }

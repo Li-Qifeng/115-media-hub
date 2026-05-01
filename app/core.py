@@ -332,6 +332,10 @@ UI_STATUS_LOG_TAIL_LIMIT = max(
     40,
     min(300, int(os.environ.get("UI_STATUS_LOG_TAIL_LIMIT", 160) or 160)),
 )
+UI_STATUS_STREAM_LOG_TAIL_LIMIT = max(
+    20,
+    min(UI_STATUS_LOG_TAIL_LIMIT, int(os.environ.get("UI_STATUS_STREAM_LOG_TAIL_LIMIT", 40) or 40)),
+)
 UI_STATUS_LOG_MEMORY_LIMIT = max(
     UI_STATUS_LOG_TAIL_LIMIT,
     min(500, int(os.environ.get("UI_STATUS_LOG_MEMORY_LIMIT", 220) or 220)),
@@ -3677,40 +3681,48 @@ def build_main_status_payload(log_limit: int = UI_STATUS_LOG_TAIL_LIMIT) -> Dict
 def build_monitor_status_payload(
     cfg: Optional[Dict[str, Any]] = None,
     log_limit: int = UI_STATUS_LOG_TAIL_LIMIT,
+    compact: bool = False,
 ) -> Dict[str, Any]:
     cfg = cfg or get_config()
     logs = monitor_status.get("logs", [])
-    return {
+    tail_limit = min(log_limit, UI_STATUS_STREAM_LOG_TAIL_LIMIT) if compact else log_limit
+    payload = {
         "running": bool(monitor_status["running"]),
         "current_task": str(monitor_status.get("current_task", "")),
         "queued": clone_jsonable(monitor_status.get("queued", [])),
-        "logs": _tail_jsonable_logs(logs, log_limit),
+        "logs": _tail_jsonable_logs(logs, tail_limit),
         "log_total": len(logs) if isinstance(logs, list) else 0,
-        "log_tail_limit": max(0, int(log_limit or 0)),
+        "log_tail_limit": max(0, int(tail_limit or 0)),
         "summary": clone_jsonable(monitor_status.get("summary", {})),
-        "tasks": clone_jsonable(cfg.get("monitor_tasks", [])),
         "webhook_base": "/webhook/",
-        "next_runs": clone_jsonable(monitor_next_run),
     }
+    if not compact:
+        payload["tasks"] = clone_jsonable(cfg.get("monitor_tasks", []))
+        payload["next_runs"] = clone_jsonable(monitor_next_run)
+    return payload
 
 
 def build_subscription_status_payload(
     cfg: Optional[Dict[str, Any]] = None,
     log_limit: int = UI_STATUS_LOG_TAIL_LIMIT,
+    compact: bool = False,
 ) -> Dict[str, Any]:
     cfg = cfg or get_config()
     logs = subscription_status.get("logs", [])
-    return {
+    tail_limit = min(log_limit, UI_STATUS_STREAM_LOG_TAIL_LIMIT) if compact else log_limit
+    payload = {
         "running": bool(subscription_status["running"]),
         "current_task": str(subscription_status.get("current_task", "")),
         "queued": clone_jsonable(subscription_status.get("queued", [])),
-        "logs": _tail_jsonable_logs(logs, log_limit),
+        "logs": _tail_jsonable_logs(logs, tail_limit),
         "log_total": len(logs) if isinstance(logs, list) else 0,
-        "log_tail_limit": max(0, int(log_limit or 0)),
+        "log_tail_limit": max(0, int(tail_limit or 0)),
         "summary": clone_jsonable(subscription_status.get("summary", {})),
-        "tasks": clone_jsonable(list_subscription_task_runtime(cfg)),
-        "next_runs": clone_jsonable(subscription_next_run),
     }
+    if not compact:
+        payload["tasks"] = clone_jsonable(list_subscription_task_runtime(cfg))
+        payload["next_runs"] = clone_jsonable(subscription_next_run)
+    return payload
 
 
 def compute_sign115_next_run_text(cron_time: str, now: Optional[datetime] = None) -> str:
@@ -3758,12 +3770,15 @@ def build_sign115_status_payload(cfg: Optional[Dict[str, Any]] = None) -> Dict[s
     }
 
 
-def build_ui_state_payload(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def build_ui_state_payload(
+    cfg: Optional[Dict[str, Any]] = None,
+    log_limit: int = UI_STATUS_STREAM_LOG_TAIL_LIMIT,
+) -> Dict[str, Any]:
     active_cfg = cfg or get_config()
     return {
-        "main": build_main_status_payload(),
-        "monitor": build_monitor_status_payload(active_cfg),
-        "subscription": build_subscription_status_payload(active_cfg),
+        "main": build_main_status_payload(log_limit=log_limit),
+        "monitor": build_monitor_status_payload(active_cfg, log_limit=log_limit),
+        "subscription": build_subscription_status_payload(active_cfg, log_limit=log_limit),
         "sign115": build_sign115_status_payload(active_cfg),
         "cookie_health": build_cookie_health_payload(active_cfg),
         "resource_channel_sync": build_resource_channel_sync_payload(),
@@ -3852,6 +3867,7 @@ def _build_resource_state_payload_snapshot(
     job_limit: int = 20,
     job_offset: int = 0,
     job_status_filter: str = "",
+    compact: bool = False,
 ) -> Dict[str, Any]:
     keyword = str(keyword or "").strip()
     normalized_search_source = normalize_resource_search_source(search_source)
@@ -3876,6 +3892,36 @@ def _build_resource_state_payload_snapshot(
     completed_job_count = int(stats_payload.get("completed_job_count", 0) or 0)
     failed_job_count = int(stats_payload.get("failed_job_count", 0) or 0)
     sources = cfg.get("resource_sources", [])
+    enabled_sources = [source for source in sources if source.get("enabled")]
+    if compact and not keyword:
+        return {
+            "jobs": clone_jsonable(jobs),
+            "active_jobs": clone_jsonable(active_jobs),
+            "job_counts": clone_jsonable(job_counts),
+            "pagination": clone_jsonable(job_pagination),
+            "channel_sync": build_resource_channel_sync_payload(),
+            "stats": {
+                "source_count": len(enabled_sources),
+                "item_count": total_item_count,
+                "total_job_count": total_job_count,
+                "active_job_count": active_job_count,
+                "completed_job_count": completed_job_count,
+                "failed_job_count": failed_job_count,
+            },
+            "setup_status": {
+                "strm_ready": bool(
+                    str(cfg.get("cookie_115", "")).strip() and str(cfg.get("strm_proxy_base_url", "")).strip()
+                ),
+                "cookie_configured": bool(str(cfg.get("cookie_115", "")).strip()),
+                "quark_cookie_configured": bool(str(cfg.get("cookie_quark", "")).strip()),
+                "has_sources": bool(enabled_sources),
+                "has_monitor": bool(cfg.get("monitor_tasks", [])),
+                "has_resource_data": total_item_count > 0,
+                "has_jobs": total_job_count > 0,
+            },
+            "cookie_health": build_cookie_health_payload(cfg),
+        }
+    tg_channel_sync_limit = get_tg_channel_sync_limit(cfg)
     channel_ids = [
         normalize_telegram_channel_id_from_input((source or {}).get("channel_id", ""))
         for source in (sources if isinstance(sources, list) else [])
@@ -3883,8 +3929,6 @@ def _build_resource_state_payload_snapshot(
     ]
     channel_ids = [channel_id for channel_id in channel_ids if channel_id]
     subscription_channel_support = load_subscription_channel_support_stats(channel_ids)
-    enabled_sources = [source for source in sources if source.get("enabled")]
-    tg_channel_sync_limit = get_tg_channel_sync_limit(cfg)
     channel_sections = build_resource_channel_sections(sources, per_channel=tg_channel_sync_limit)
     channel_sections = filter_resource_sections_by_provider(channel_sections, normalized_provider_filter, drop_empty=normalized_provider_filter != "all")
     search_sections = filter_resource_sections_by_provider(search_sections, normalized_provider_filter, drop_empty=True)
@@ -3963,6 +4007,7 @@ async def build_resource_state_payload(
     job_limit: int = 20,
     job_offset: int = 0,
     job_status_filter: str = "",
+    compact: bool = False,
 ) -> Dict[str, Any]:
     cfg = get_config()
     await asyncio.to_thread(recover_resource_jobs_if_due)
@@ -4013,6 +4058,7 @@ async def build_resource_state_payload(
         job_limit,
         job_offset,
         job_status_filter,
+        compact,
     )
 
 
