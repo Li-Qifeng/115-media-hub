@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-05-02
+- 文件管理重命名入口改为常驻按钮，支持单选文件或文件夹重命名，并保留文件夹路径提醒。
+- 识别与预览状态新增“退出识别”入口，退出后会清掉识别结果、TMDB 绑定和预览，避免状态卡住。
+
 ## [0.3.6] - 2026-05-01
 - 优化 NAS + frp 场景下的传输压力，资源页与状态轮询改为轻量快照，SSE 日志尾也进一步缩短。
 

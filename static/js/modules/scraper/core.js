@@ -18,12 +18,14 @@ const state = {
     identifyBusy: false,
     identifyResult: null,
     identifySelectionKey: '',
+    identifyRequestSeq: 0,
     tmdb: null,
     manualBusy: false,
     manualResults: [],
     planBusy: false,
     plan: null,
     planSelections: new Set(),
+    planRequestSeq: 0,
     executeBusy: false,
     jobs: [],
     jobsBusy: false,
@@ -247,6 +249,8 @@ function isWholeFolderSelection(entries = getSelectedEntries()) {
 }
 
 function resetIdentifyContext({ resetInputs = false } = {}) {
+    state.identifyRequestSeq += 1;
+    state.identifyBusy = false;
     state.identifyResult = null;
     state.identifySelectionKey = '';
     state.tmdb = null;
@@ -264,10 +268,20 @@ function clearSelection() {
 }
 
 function clearPlan() {
+    state.planRequestSeq += 1;
+    state.planBusy = false;
     state.plan = null;
     state.planSelections.clear();
     renderPlan();
     renderEntries();
+}
+
+function clearIdentifyMode({ resetInputs = true } = {}) {
+    clearPlan();
+    resetIdentifyContext({ resetInputs });
+    closeIdentifyPanel();
+    renderIdentify();
+    renderSelection();
 }
 
 function invalidateSelectionContext() {
@@ -456,16 +470,26 @@ function renderSelection() {
         checkAll.disabled = state.loading || selectable.length <= 0;
     }
     const hasSelection = selectedEntries.length > 0;
-    const selectedSingleFolder = isWholeFolderSelection(selectedEntries);
     const selectedInCurrent = state.entries.filter(item => state.selected.has(item.id)).length;
     const renameButton = document.querySelector('[data-scraper-action="rename-selected"]');
     if (renameButton) {
-        const showRename = selectedSingleFolder && !hasPlan;
-        renameButton.classList.toggle('hidden', !showRename);
-        renameButton.disabled = state.loading || !showRename;
-        renameButton.classList.toggle('btn-disabled', state.loading || !showRename);
-        renameButton.textContent = '重命名文件夹';
-        renameButton.title = showRename ? '仅在选中整个剧集文件夹时可用' : '仅在选中整个剧集文件夹时可用';
+        const canRename = selectedEntries.length === 1 && !hasPlan;
+        renameButton.classList.remove('hidden');
+        renameButton.disabled = state.loading || !canRename;
+        renameButton.classList.toggle('btn-disabled', state.loading || !canRename);
+        renameButton.textContent = '重命名';
+        renameButton.title = canRename ? '重命名选中的文件或文件夹' : '请选择一个文件或文件夹进行重命名';
+    }
+    const clearIdentifyButton = document.querySelector('[data-scraper-action="clear-identify"]');
+    if (clearIdentifyButton) {
+        const hasIdentifyContext = !!(state.identifyBusy || state.identifyResult || state.tmdb || hasPlan);
+        clearIdentifyButton.classList.toggle('hidden', !hasIdentifyContext);
+        clearIdentifyButton.disabled = state.loading || state.executeBusy || !hasIdentifyContext;
+        clearIdentifyButton.classList.toggle('btn-disabled', state.loading || state.executeBusy || !hasIdentifyContext);
+        clearIdentifyButton.textContent = state.identifyBusy || state.planBusy ? '退出中...' : '退出识别';
+        clearIdentifyButton.title = hasIdentifyContext
+            ? '清除识别结果、TMDB 绑定和预览，返回普通文件浏览'
+            : '当前没有识别状态';
     }
     const actionRules = {
         'select-range': !hasPlan && selectedInCurrent >= 2,
@@ -1184,13 +1208,14 @@ async function createFolder() {
 
 async function renameSelected() {
     const selected = getEffectiveSelectedEntries();
-    if (selected.length !== 1 || !selected[0]?.is_dir) {
-        showToast('请选择一个文件夹进行重命名', { tone: 'warn', duration: 2400, placement: 'top-center' });
+    if (selected.length !== 1) {
+        showToast('请选择一个文件或文件夹进行重命名', { tone: 'warn', duration: 2400, placement: 'top-center' });
         return;
     }
     const target = selected[0];
+    const targetLabel = target.is_dir ? '文件夹' : '文件';
     const name = await promptText({
-        title: '重命名',
+        title: `重命名${targetLabel}`,
         message: target.name,
         defaultValue: target.name,
         confirmText: '保存',
@@ -1199,7 +1224,7 @@ async function renameSelected() {
     const oldPath = getSelectionPath(target);
     const newPath = normalizePath(joinPath(getSelectionParentPath(target), name));
     try {
-        if (oldPath && newPath) {
+        if (target.is_dir && oldPath && newPath) {
             let warning = '';
             try {
                 const warningData = await window.MediaHubApi.postJson(`/scraper/${encodeURIComponent(state.provider)}/rename-warning`, {
@@ -1224,7 +1249,7 @@ async function renameSelected() {
             parent_id: target.parent_id || state.cid,
             name,
         });
-        showToast('已重命名', { tone: 'success', duration: 2200, placement: 'top-center' });
+        showToast(`${targetLabel}已重命名`, { tone: 'success', duration: 2200, placement: 'top-center' });
         await loadEntries({ force: true });
     } catch (error) {
         showToast(`重命名失败：${error.message || '未知错误'}`, { tone: 'error', duration: 3200, placement: 'top-center' });
@@ -1314,10 +1339,11 @@ async function identifySelected() {
         renderIdentify();
         return;
     }
-    state.identifyBusy = true;
     resetIdentifyContext({ resetInputs: true });
+    state.identifyBusy = true;
     state.identifySelectionKey = selectionKey;
     clearPlan();
+    const requestSeq = state.identifyRequestSeq;
     openIdentifyPanel();
     renderIdentify();
     try {
@@ -1325,6 +1351,7 @@ async function identifySelected() {
             provider: state.provider,
             entries,
         });
+        if (state.identifyRequestSeq !== requestSeq) return;
         state.identifyResult = data || {};
         state.tmdb = null;
         state.identifySelectionKey = selectionKey;
@@ -1338,12 +1365,15 @@ async function identifySelected() {
             placement: 'top-center',
         });
     } catch (error) {
+        if (state.identifyRequestSeq !== requestSeq) return;
         state.identifyResult = { msg: error.message || '识别失败' };
         state.identifySelectionKey = selectionKey;
         showToast(`识别失败：${error.message || '未知错误'}`, { tone: 'error', duration: 3400, placement: 'top-center' });
     } finally {
-        state.identifyBusy = false;
-        renderIdentify();
+        if (state.identifyRequestSeq === requestSeq) {
+            state.identifyBusy = false;
+            renderIdentify();
+        }
     }
 }
 
@@ -1412,10 +1442,11 @@ async function buildPlan() {
         showToast('请先绑定 TMDB 条目', { tone: 'warn', duration: 2400, placement: 'top-center' });
         return;
     }
+    clearPlan();
     state.planBusy = true;
-    state.plan = null;
     showToast('正在识别文件并生成预览...', { tone: 'info', duration: 1800, placement: 'top-center' });
     renderPlan();
+    const requestSeq = state.planRequestSeq;
     try {
         const options = collectOptions();
         const tmdb = state.tmdb ? { ...state.tmdb } : null;
@@ -1430,6 +1461,7 @@ async function buildPlan() {
             tmdb: tmdb || state.tmdb,
             options,
         });
+        if (state.planRequestSeq !== requestSeq) return;
         state.plan = data;
         state.planSelections = new Set(
             (Array.isArray(data.actions) ? data.actions : [])
@@ -1450,11 +1482,14 @@ async function buildPlan() {
         );
         closeIdentifyPanel();
     } catch (error) {
+        if (state.planRequestSeq !== requestSeq) return;
         showToast(`生成预览失败：${error.message || '未知错误'}`, { tone: 'error', duration: 3600, placement: 'top-center' });
     } finally {
-        state.planBusy = false;
-        renderPlan();
-        renderEntries();
+        if (state.planRequestSeq === requestSeq) {
+            state.planBusy = false;
+            renderPlan();
+            renderEntries();
+        }
     }
 }
 
@@ -1670,6 +1705,7 @@ function handleClick(event) {
     if (action === 'prepare-move') prepareMove();
     if (action === 'delete-selected') void deleteSelected();
     if (action === 'identify') void identifySelected();
+    if (action === 'clear-identify') clearIdentifyMode();
     if (action === 'open-identify') {
         if (state.identifyResult || state.tmdb) {
             openIdentifyPanel();
