@@ -970,7 +970,14 @@
             let trail = normalizeResourceFolderTrail(data?.trail || []);
             let displayPath = normalizeRelativePathInput(data?.display_path || '');
             if (!displayPath) displayPath = buildResourceFolderDisplayPathFromTrail(trail);
-            if (!folderId || folderId === '0' || !displayPath) return null;
+            if (!folderId || !displayPath) return null;
+            if (folderId === '0' && displayPath) {
+                return {
+                    folder_id: '0',
+                    display_path: displayPath,
+                    trail: normalizeResourceFolderTrail(data?.trail || [{ id: '0', name: '根目录' }])
+                };
+            }
 
             const currentTrailLastId = String(trail[trail.length - 1]?.id || '0').trim() || '0';
             if (currentTrailLastId !== folderId) {
