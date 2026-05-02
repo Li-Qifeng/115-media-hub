@@ -228,7 +228,7 @@
             resourceFolderShowAllFiles = false;
             setSelectedResourceFolder('0', path, {
                 loadPreview: false,
-                persist: false,
+                persist: true,
                 trail: resourceFolderTrail,
             });
             renderResourceFavoriteDirs();

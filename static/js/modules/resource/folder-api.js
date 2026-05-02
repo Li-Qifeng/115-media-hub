@@ -1008,7 +1008,7 @@
         function rememberResourceFolderSelection(folderId, displayPath, trail = []) {
             const normalizedFolderId = String(folderId || '0').trim() || '0';
             const normalizedPath = normalizeRelativePathInput(displayPath || '');
-            if (!normalizedPath || normalizedFolderId === '0') return;
+            if (!normalizedPath) return;
             const normalizedTrail = normalizeResourceFolderTrail(trail);
             try {
                 const provider = getResourceFolderMemoryProvider();
