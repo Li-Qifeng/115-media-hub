@@ -178,6 +178,9 @@
         let monitorTaskIntroExpanded = {};
         let subscriptionTaskIntroExpanded = {};
         let statusEventSource = null;
+        let sseReconnectAttempt = 0;
+        const SSE_RECONNECT_BASE_MS = 1000;
+        const SSE_RECONNECT_MAX_MS = 30000;
         let statusStreamHealthy = false;
         let statusFallbackTimer = null;
         let resourcePollTimer = null;
@@ -1709,6 +1712,7 @@
             });
             statusEventSource.onopen = () => {
                 statusStreamHealthy = true;
+                sseReconnectAttempt = 0;
                 stopStatusFallbackPolling();
                 scheduleResourcePolling();
             };
@@ -1716,6 +1720,15 @@
                 statusStreamHealthy = false;
                 startStatusFallbackPolling();
                 scheduleResourcePolling(RESOURCE_POLL_ACTIVE_INTERVAL);
+                statusEventSource.close();
+                sseReconnectAttempt += 1;
+                const delay = Math.min(
+                    SSE_RECONNECT_MAX_MS,
+                    SSE_RECONNECT_BASE_MS * Math.pow(2, sseReconnectAttempt - 1)
+                );
+                window.setTimeout(() => {
+                    connectStatusStream();
+                }, delay);
             };
         }
 
