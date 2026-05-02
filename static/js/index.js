@@ -1525,12 +1525,16 @@
 
         function startStatusFallbackPolling() {
             if (statusFallbackTimer) return;
-            statusFallbackTimer = window.setInterval(() => {
-                refreshMainLogs({ compact: true });
-                refreshMonitorState({ compact: true });
-                refreshSubscriptionState({ compact: true });
-                refreshSign115Status(false);
-                refreshCookieHealthStatus(false);
+            statusFallbackTimer = window.setInterval(async () => {
+                try {
+                    const payload = await window.MediaHubApi.getJson('/status-summary');
+                    applyMainState(payload.main);
+                    applyMonitorState(payload.monitor);
+                    applySubscriptionState(payload.subscription);
+                    applySign115State(payload.sign115);
+                    applyCookieHealthState(payload.cookie_health);
+                    applyResourceChannelSyncState(payload.resource_channel_sync);
+                } catch (e) {}
             }, STATUS_FALLBACK_INTERVAL);
         }
 
