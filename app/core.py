@@ -357,6 +357,14 @@ UI_STATUS_LOG_MEMORY_LIMIT = max(
     UI_STATUS_LOG_TAIL_LIMIT,
     min(500, int(os.environ.get("UI_STATUS_LOG_MEMORY_LIMIT", 220) or 220)),
 )
+MONITOR_UI_RECENT_TASK_LOG_LIMIT = max(
+    1,
+    min(10, int(os.environ.get("MONITOR_UI_RECENT_TASK_LOG_LIMIT", 3) or 3)),
+)
+MONITOR_UI_TASK_LOG_MEMORY_LIMIT = max(
+    MONITOR_UI_RECENT_TASK_LOG_LIMIT,
+    min(30, int(os.environ.get("MONITOR_UI_TASK_LOG_MEMORY_LIMIT", 12) or 12)),
+)
 SUBSCRIPTION_UI_RECENT_TASK_LOG_LIMIT = max(
     1,
     min(
@@ -364,9 +372,9 @@ SUBSCRIPTION_UI_RECENT_TASK_LOG_LIMIT = max(
         int(
             os.environ.get(
                 "SUBSCRIPTION_UI_RECENT_TASK_LOG_LIMIT",
-                os.environ.get("SUBSCRIPTION_UI_RECENT_LOG_LIMIT", 5),
+                os.environ.get("SUBSCRIPTION_UI_RECENT_LOG_LIMIT", 3),
             )
-            or 5
+            or 3
         ),
     ),
 )
@@ -377,9 +385,9 @@ SUBSCRIPTION_LOG_TASK_PAGE_LIMIT = max(
         int(
             os.environ.get(
                 "SUBSCRIPTION_LOG_TASK_PAGE_LIMIT",
-                os.environ.get("SUBSCRIPTION_LOG_PAGE_LIMIT", 5),
+                os.environ.get("SUBSCRIPTION_LOG_PAGE_LIMIT", 3),
             )
-            or 5
+            or 3
         ),
     ),
 )
@@ -1305,6 +1313,96 @@ def normalize_subscription_exclude_keywords(value: Any) -> List[str]:
     return unique_preserve_order(tokens)[:50]
 
 
+SUBSCRIPTION_SCAN_RECOMMENDED_DEFAULTS: Dict[str, Dict[str, Any]] = {
+    "115": {
+        "candidate_scan_prefetch_limit": 3,
+        "candidate_scan_concurrency": 1,
+        "share_scan_concurrency": 1,
+        "share_scan_rate_limit_seconds": 1.0,
+    },
+    "quark": {
+        "candidate_scan_prefetch_limit": 8,
+        "candidate_scan_concurrency": 2,
+        "share_scan_concurrency": 2,
+        "share_scan_rate_limit_seconds": 0.35,
+    },
+}
+
+
+def _normalize_subscription_scan_int(value: Any, fallback: int, min_value: int, max_value: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = fallback
+    return max(min_value, min(max_value, parsed))
+
+
+def _normalize_subscription_scan_float(value: Any, fallback: float, min_value: float, max_value: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = fallback
+    normalized = max(min_value, min(max_value, parsed))
+    return round(normalized, 2)
+
+
+def get_subscription_scan_recommended_defaults(provider: Any = "115") -> Dict[str, Any]:
+    normalized_provider = normalize_subscription_provider(provider, fallback="115")
+    defaults = SUBSCRIPTION_SCAN_RECOMMENDED_DEFAULTS.get(
+        normalized_provider,
+        SUBSCRIPTION_SCAN_RECOMMENDED_DEFAULTS["115"],
+    )
+    return dict(defaults)
+
+
+def normalize_subscription_scan_settings(task: Dict[str, Any], provider: Any = "") -> Dict[str, Any]:
+    payload = task if isinstance(task, dict) else {}
+    normalized_provider = normalize_subscription_provider(provider or payload.get("provider", "115"), fallback="115")
+    defaults = get_subscription_scan_recommended_defaults(normalized_provider)
+    candidate_scan_prefetch_limit = _normalize_subscription_scan_int(
+        payload.get(
+            "candidate_scan_prefetch_limit",
+            payload.get("candidate_scan_prewarm_limit", payload.get("scan_prewarm_limit", defaults["candidate_scan_prefetch_limit"])),
+        ),
+        defaults["candidate_scan_prefetch_limit"],
+        0,
+        80,
+    )
+    candidate_scan_concurrency = _normalize_subscription_scan_int(
+        payload.get(
+            "candidate_scan_concurrency",
+            payload.get("candidate_prewarm_concurrency", defaults["candidate_scan_concurrency"]),
+        ),
+        defaults["candidate_scan_concurrency"],
+        1,
+        6,
+    )
+    share_scan_concurrency = _normalize_subscription_scan_int(
+        payload.get(
+            "share_scan_concurrency",
+            payload.get("scan_concurrency", defaults["share_scan_concurrency"]),
+        ),
+        defaults["share_scan_concurrency"],
+        1,
+        6,
+    )
+    share_scan_rate_limit_seconds = _normalize_subscription_scan_float(
+        payload.get(
+            "share_scan_rate_limit_seconds",
+            payload.get("scan_rate_limit_seconds", defaults["share_scan_rate_limit_seconds"]),
+        ),
+        float(defaults["share_scan_rate_limit_seconds"]),
+        0.05,
+        5.0,
+    )
+    return {
+        "candidate_scan_prefetch_limit": candidate_scan_prefetch_limit,
+        "candidate_scan_concurrency": candidate_scan_concurrency,
+        "share_scan_concurrency": share_scan_concurrency,
+        "share_scan_rate_limit_seconds": share_scan_rate_limit_seconds,
+    }
+
+
 def normalize_subscription_task(task: Dict[str, Any]) -> Dict[str, Any]:
     media_type = str(task.get("media_type", "") or task.get("type", "movie")).strip().lower()
     if media_type not in ("movie", "tv"):
@@ -1458,6 +1556,7 @@ def normalize_subscription_task(task: Dict[str, Any]) -> Dict[str, Any]:
         fixed_link_channel_search = False
     if not share_subdir:
         share_subdir_cid = ""
+    scan_settings = normalize_subscription_scan_settings(task, provider)
     return {
         "name": name,
         "provider": provider,
@@ -1484,6 +1583,10 @@ def normalize_subscription_task(task: Dict[str, Any]) -> Dict[str, Any]:
         "min_score": max(30, min(100, min_score)),
         "quality_priority": quality_priority,
         "min_file_size_mb": min_file_size_mb,
+        "candidate_scan_prefetch_limit": scan_settings["candidate_scan_prefetch_limit"],
+        "candidate_scan_concurrency": scan_settings["candidate_scan_concurrency"],
+        "share_scan_concurrency": scan_settings["share_scan_concurrency"],
+        "share_scan_rate_limit_seconds": scan_settings["share_scan_rate_limit_seconds"],
         # 向后兼容：anime_mode 为旧字段，语义已等同于 multi_season_mode。
         "anime_mode": multi_season_mode,
         "multi_season_mode": multi_season_mode,
@@ -3071,7 +3174,7 @@ def match_monitor_task_for_savepath(cfg: Dict[str, Any], savepath: str, provider
 
 
 def restore_runtime_logs_from_files() -> None:
-    global subscription_log_seq
+    global subscription_log_seq, subscription_log_task_total
 
     def build_subscription_restore_entry(line: str, seq: int) -> Dict[str, Any]:
         raw_text = re.sub(r"^\d{2}-\d{2} \d{2}:\d{2}:\d{2}\s+", "", line, count=1).strip()
@@ -3098,10 +3201,17 @@ def restore_runtime_logs_from_files() -> None:
             {"text": line, "level": infer_log_level_from_text(line)}
             for line in monitor_lines
         ]
+    monitor_segments = build_monitor_log_segments_from_entries(_read_monitor_log_entries_from_files())
+    if monitor_segments:
+        monitor_status["log_segments"] = monitor_segments[-MONITOR_UI_TASK_LOG_MEMORY_LIMIT:]
+        monitor_status["log_segment_total"] = sum(
+            1 for segment in monitor_segments if str(segment.get("kind", "") or "") == "task"
+        )
 
     subscription_lines = read_log_lines(SUBSCRIPTION_LOG_PATH)
     if subscription_lines:
         subscription_log_seq = len(subscription_lines)
+        subscription_log_task_total = sum(1 for line in subscription_lines if "订阅开始" in str(line or ""))
         tail_start_seq = max(0, len(subscription_lines) - UI_STATUS_LOG_MEMORY_LIMIT)
         subscription_status["logs"] = [
             build_subscription_restore_entry(line, tail_start_seq + index + 1)
@@ -3198,6 +3308,22 @@ monitor_status = {
     "current_task": "",
     "queued": [],
     "logs": [{"text": "系统已就绪", "level": "info"}],
+    "log_segment_total": 0,
+    "log_segments": [
+        {
+            "id": "system-ready",
+            "kind": "system",
+            "title": "系统日志",
+            "task_name": "",
+            "trigger": "",
+            "status": "",
+            "started_at": "",
+            "ended_at": "",
+            "complete": False,
+            "entries": [{"text": "系统已就绪", "level": "info"}],
+            "entry_count": 1,
+        }
+    ],
     "summary": {"step": "空闲", "detail": "等待监控任务"},
 }
 monitor_control = {"cancel": False}
@@ -3220,6 +3346,7 @@ subscription_log_context_var: contextvars.ContextVar[Optional[Dict[str, Any]]] =
     default=None,
 )
 subscription_log_seq = 0
+subscription_log_task_total = 0
 sign115_status = {
     "state": "idle",
     "message": "尚未检查签到状态",
@@ -3753,6 +3880,235 @@ def _tail_jsonable_logs(logs: Any, limit: int = UI_STATUS_LOG_TAIL_LIMIT) -> Lis
     return clone_jsonable(tail)
 
 
+def _serialize_monitor_log_entry(entry: Any) -> Dict[str, str]:
+    payload = entry if isinstance(entry, dict) else {}
+    text = str(payload.get("text", "") or "")
+    level = str(payload.get("level", "info") or "info").strip().lower() or "info"
+    return {"text": text, "level": level}
+
+
+def _extract_monitor_log_timestamp(text: str) -> str:
+    match = re.match(r"^(\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+", str(text or ""))
+    return match.group(1) if match else ""
+
+
+def _extract_monitor_task_divider_label(text: str) -> str:
+    normalized = str(text or "").strip()
+    match = re.search(r"【([^】]+)】", normalized)
+    return str(match.group(1) or "").strip() if match else ""
+
+
+def _parse_monitor_task_label(label: str) -> Dict[str, str]:
+    parts = [part.strip() for part in str(label or "").split("|")]
+    kind = parts[0] if parts else ""
+    task_name = parts[1] if len(parts) >= 2 else ""
+    extra = parts[2] if len(parts) >= 3 else ""
+    return {"kind": kind, "task_name": task_name, "extra": extra}
+
+
+def _new_monitor_log_segment(kind: str = "system") -> Dict[str, Any]:
+    return {
+        "id": "",
+        "kind": kind,
+        "title": "系统日志" if kind == "system" else "监控任务",
+        "task_name": "",
+        "trigger": "",
+        "status": "",
+        "started_at": "",
+        "ended_at": "",
+        "complete": False,
+        "entries": [],
+        "entry_count": 0,
+    }
+
+
+def _finalize_monitor_log_segment(segment: Dict[str, Any], index: int) -> Dict[str, Any]:
+    entries = [
+        _serialize_monitor_log_entry(entry)
+        for entry in (segment.get("entries", []) if isinstance(segment, dict) else [])
+    ]
+    first_text = str(entries[0].get("text", "") if entries else "")
+    segment_id = str(segment.get("id", "") or "").strip()
+    if not segment_id:
+        digest = hashlib.sha1(f"{index}:{first_text}".encode("utf-8")).hexdigest()[:12]
+        segment_id = f"monitor-log-{digest}"
+    task_name = str(segment.get("task_name", "") or "").strip()
+    title = str(segment.get("title", "") or "").strip()
+    if not title:
+        title = task_name or "系统日志"
+    return {
+        "id": segment_id,
+        "kind": str(segment.get("kind", "system") or "system"),
+        "title": title,
+        "task_name": task_name,
+        "trigger": str(segment.get("trigger", "") or "").strip(),
+        "status": str(segment.get("status", "") or "").strip(),
+        "started_at": str(segment.get("started_at", "") or "").strip(),
+        "ended_at": str(segment.get("ended_at", "") or "").strip(),
+        "complete": bool(segment.get("complete", False)),
+        "entries": entries,
+        "entry_count": len(entries),
+    }
+
+
+def build_monitor_log_segments_from_entries(entries: Any) -> List[Dict[str, Any]]:
+    if not isinstance(entries, list):
+        return []
+
+    segments: List[Dict[str, Any]] = []
+    current: Optional[Dict[str, Any]] = None
+
+    for raw_entry in entries:
+        entry = _serialize_monitor_log_entry(raw_entry)
+        text = entry.get("text", "")
+        label = _extract_monitor_task_divider_label(text) if entry.get("level") == "task-divider" else ""
+        label_info = _parse_monitor_task_label(label) if label else {}
+        is_start = label_info.get("kind") == "任务开始"
+        is_end = label_info.get("kind") == "任务结束"
+
+        if is_start:
+            if current and current.get("entries"):
+                segments.append(current)
+            current = _new_monitor_log_segment("task")
+            current["task_name"] = label_info.get("task_name", "")
+            current["trigger"] = label_info.get("extra", "")
+            current["title"] = current["task_name"] or "监控任务"
+            current["started_at"] = _extract_monitor_log_timestamp(text)
+        elif current is None:
+            current = _new_monitor_log_segment("system")
+            current["started_at"] = _extract_monitor_log_timestamp(text)
+
+        current.setdefault("entries", []).append(entry)
+
+        if is_end:
+            current["kind"] = "task"
+            current["task_name"] = current.get("task_name") or label_info.get("task_name", "")
+            current["status"] = label_info.get("extra", "")
+            current["ended_at"] = _extract_monitor_log_timestamp(text)
+            current["complete"] = True
+            segments.append(current)
+            current = None
+
+    if current and current.get("entries"):
+        segments.append(current)
+
+    return [
+        _finalize_monitor_log_segment(segment, index)
+        for index, segment in enumerate(segments)
+    ]
+
+
+def _read_monitor_log_entries_from_files() -> List[Dict[str, str]]:
+    lines: List[str] = []
+    for index in range(LOG_ROTATE_BACKUPS, 0, -1):
+        lines.extend(read_log_lines(f"{MONITOR_LOG_PATH}.{index}"))
+    lines.extend(read_log_lines(MONITOR_LOG_PATH))
+    return [
+        {"text": line, "level": infer_log_level_from_text(line)}
+        for line in lines
+    ]
+
+
+def _append_monitor_log_segment_entry(entry: Dict[str, str]) -> None:
+    segments = monitor_status.setdefault("log_segments", [])
+    if not isinstance(segments, list):
+        segments = []
+        monitor_status["log_segments"] = segments
+
+    serialized_entry = _serialize_monitor_log_entry(entry)
+    text = serialized_entry.get("text", "")
+    label = (
+        _extract_monitor_task_divider_label(text)
+        if serialized_entry.get("level") == "task-divider"
+        else ""
+    )
+    label_info = _parse_monitor_task_label(label) if label else {}
+    is_start = label_info.get("kind") == "任务开始"
+    is_end = label_info.get("kind") == "任务结束"
+
+    if is_start:
+        segment = _new_monitor_log_segment("task")
+        segment["task_name"] = label_info.get("task_name", "")
+        segment["trigger"] = label_info.get("extra", "")
+        segment["title"] = segment["task_name"] or "监控任务"
+        segment["started_at"] = _extract_monitor_log_timestamp(text)
+        segments.append(segment)
+        monitor_status["log_segment_total"] = max(
+            0,
+            int(monitor_status.get("log_segment_total", 0) or 0),
+        ) + 1
+    elif not segments or bool(segments[-1].get("complete")):
+        segment = _new_monitor_log_segment("system")
+        segment["started_at"] = _extract_monitor_log_timestamp(text)
+        segments.append(segment)
+    else:
+        segment = segments[-1]
+
+    segment.setdefault("entries", []).append(serialized_entry)
+
+    if is_end:
+        segment["kind"] = "task"
+        segment["task_name"] = segment.get("task_name") or label_info.get("task_name", "")
+        segment["status"] = label_info.get("extra", "")
+        segment["ended_at"] = _extract_monitor_log_timestamp(text)
+        segment["complete"] = True
+
+    overflow = len(segments) - MONITOR_UI_TASK_LOG_MEMORY_LIMIT
+    if overflow > 0:
+        del segments[:overflow]
+    for index, segment in enumerate(segments):
+        segments[index] = _finalize_monitor_log_segment(segment, index)
+
+
+def build_monitor_log_segment_page(
+    *,
+    offset: int = 0,
+    limit: int = MONITOR_UI_RECENT_TASK_LOG_LIMIT,
+    source: str = "memory",
+) -> Dict[str, Any]:
+    normalized_limit = max(1, min(20, int(limit or MONITOR_UI_RECENT_TASK_LOG_LIMIT)))
+    normalized_offset = max(0, int(offset or 0))
+    if source == "file":
+        segments = build_monitor_log_segments_from_entries(_read_monitor_log_entries_from_files())
+        task_segments = [segment for segment in segments if str(segment.get("kind", "") or "") == "task"]
+        visible_segments = task_segments if task_segments else segments
+        total = len(visible_segments)
+        end = max(0, total - normalized_offset)
+        start = max(0, end - normalized_limit)
+        page_segments = visible_segments[start:end] if end > start else []
+        has_more = start > 0
+        next_offset = total - start
+    else:
+        raw_segments = monitor_status.get("log_segments", [])
+        if not isinstance(raw_segments, list) or not raw_segments:
+            raw_segments = build_monitor_log_segments_from_entries(monitor_status.get("logs", []))
+        segments = [
+            _finalize_monitor_log_segment(segment, index)
+            for index, segment in enumerate(raw_segments if isinstance(raw_segments, list) else [])
+        ]
+        task_segments = [segment for segment in segments if str(segment.get("kind", "") or "") == "task"]
+        visible_segments = task_segments if task_segments else segments
+        memory_total = len(visible_segments)
+        end = max(0, memory_total - normalized_offset)
+        start = max(0, end - normalized_limit)
+        page_segments = visible_segments[start:end] if end > start else []
+        stored_task_total = max(
+            int(monitor_status.get("log_segment_total", 0) or 0),
+            len(task_segments),
+        )
+        total = stored_task_total if task_segments else memory_total
+        has_more = (stored_task_total > normalized_offset + len(page_segments)) if task_segments else start > 0
+        next_offset = normalized_offset + len(page_segments)
+    return {
+        "segments": clone_jsonable(page_segments),
+        "total": total,
+        "offset": normalized_offset,
+        "limit": normalized_limit,
+        "has_more": has_more,
+        "next_offset": next_offset,
+    }
+
+
 def _serialize_subscription_ui_log(entry: Any) -> Dict[str, str]:
     payload = entry if isinstance(entry, dict) else {}
     seq = max(0, int(payload.get("seq", 0) or 0))
@@ -4130,6 +4486,7 @@ def build_subscription_log_meta(logs: Any = None) -> Dict[str, Any]:
     return {
         "latest_seq": latest_seq,
         "total": latest_seq,
+        "task_block_total": max(0, int(subscription_log_task_total or 0)),
         "recent_task_limit": SUBSCRIPTION_UI_RECENT_TASK_LOG_LIMIT,
         "page_task_limit": SUBSCRIPTION_LOG_TASK_PAGE_LIMIT,
         "latest": build_subscription_log_preview(source),
@@ -4205,6 +4562,8 @@ def build_subscription_log_page_payload(
         entries.append(build_subscription_log_entry_from_line(line, base_seq + index + 1, event_payload))
 
     blocks = _build_subscription_log_blocks(entries)
+    task_block_total = sum(1 for block in blocks if bool(block.get("task")))
+    visible_block_total = task_block_total
     if normalized_after > 0:
         after_entries = [
             entry
@@ -4241,13 +4600,15 @@ def build_subscription_log_page_payload(
         "has_more_after": has_more_after,
         "page_task_limit": normalized_limit,
         "task_block_count": sum(1 for block in selected_blocks if bool(block.get("task"))),
+        "task_block_total": visible_block_total,
     }
 
 
 async def clear_subscription_log_history() -> None:
-    global subscription_log_seq
+    global subscription_log_seq, subscription_log_task_total
     clear_text = f"{format_log_time(True)} 订阅日志已清空"
     subscription_log_seq = 1
+    subscription_log_task_total = 0
     subscription_status["logs"] = [
         {
             "seq": 1,
@@ -4295,6 +4656,7 @@ def build_monitor_status_payload(
     cfg = cfg or get_config()
     logs = monitor_status.get("logs", [])
     tail_limit = min(log_limit, UI_STATUS_STREAM_LOG_TAIL_LIMIT) if compact else log_limit
+    segment_page = build_monitor_log_segment_page(limit=MONITOR_UI_RECENT_TASK_LOG_LIMIT)
     payload = {
         "running": bool(monitor_status["running"]),
         "current_task": str(monitor_status.get("current_task", "")),
@@ -4302,6 +4664,10 @@ def build_monitor_status_payload(
         "logs": _tail_jsonable_logs(logs, tail_limit),
         "log_total": len(logs) if isinstance(logs, list) else 0,
         "log_tail_limit": max(0, int(tail_limit or 0)),
+        "log_segments": segment_page["segments"],
+        "log_segment_total": segment_page["total"],
+        "log_segment_limit": segment_page["limit"],
+        "log_segment_has_more": segment_page["has_more"],
         "summary": clone_jsonable(monitor_status.get("summary", {})),
         "webhook_base": "/webhook/",
     }
@@ -4979,7 +5345,9 @@ async def write_log(msg: str, level: Optional[str] = None) -> None:
 async def write_monitor_log(text: str, level: str = "info") -> None:
     resolved_level = str(level or infer_log_level_from_text(text)).strip().lower() or "info"
     line = f"{format_log_time(True)} {text}"
-    _append_status_log_entry(monitor_status["logs"], {"text": line, "level": resolved_level})
+    entry = {"text": line, "level": resolved_level}
+    _append_status_log_entry(monitor_status["logs"], entry)
+    _append_monitor_log_segment_entry(entry)
     schedule_ui_state_push()
     await asyncio.to_thread(append_log_file, MONITOR_LOG_PATH, line)
     await asyncio.sleep(0)
@@ -5143,10 +5511,13 @@ def _build_subscription_log_display_text(text: str, event_payload: Dict[str, Any
 
 
 async def write_subscription_log(text: str, level: str = "info", compact: Optional[str] = None) -> None:
+    global subscription_log_task_total
     resolved_level = str(level or infer_log_level_from_text(text)).strip().lower() or "info"
     timestamp = format_log_time(True)
     line = f"{timestamp} {text}"
     seq = _next_subscription_log_seq()
+    if "订阅开始" in str(text or ""):
+        subscription_log_task_total += 1
     context = subscription_log_context_var.get() or {}
     event = _infer_subscription_log_event(text)
     stage = _infer_subscription_log_stage(text)

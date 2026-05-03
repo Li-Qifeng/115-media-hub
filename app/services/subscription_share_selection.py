@@ -947,7 +947,7 @@ async def _build_tv_share_selection_for_missing_episodes(
     provider_truncated_dirs = 0
 
     request_timeout = max(10, int(per_request_timeout or 25))
-    concurrency = max(1, int(SUBSCRIPTION_SHARE_SCAN_CONCURRENCY or 1))
+    concurrency = get_subscription_share_scan_concurrency(task)
     max_dirs = _normalize_subscription_share_scan_limit(max_dirs)
     max_entries = _normalize_subscription_share_scan_limit(max_entries)
     while (
@@ -1178,7 +1178,7 @@ async def _scan_subscription_share_tree_snapshot(
     provider_pages_scanned = 0
     provider_truncated_dirs = 0
     request_timeout = max(10, int(per_request_timeout or 25))
-    concurrency = max(1, int(SUBSCRIPTION_SHARE_SCAN_CONCURRENCY or 1))
+    concurrency = get_subscription_share_scan_concurrency(task)
     max_dirs = _normalize_subscription_share_scan_limit(max_dirs)
     max_entries = _normalize_subscription_share_scan_limit(max_entries)
 
@@ -1608,7 +1608,7 @@ async def _scan_subscription_share_episode_manifest(
     scanned_entries = 0
     failed_dirs = 0
     share_root_title = normalize_relative_path(str(normalized_selection.get("share_root_title", "") or "").strip())
-    concurrency = max(1, int(SUBSCRIPTION_SHARE_SCAN_CONCURRENCY or 1))
+    concurrency = get_subscription_share_scan_concurrency(task)
     skipped_archive_files = 0
     min_file_size_mb = normalize_subscription_min_file_size_mb(task.get("min_file_size_mb", 0))
     min_file_size_bytes = _subscription_task_min_file_size_bytes(task)

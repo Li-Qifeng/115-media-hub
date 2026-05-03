@@ -2,6 +2,7 @@ import asyncio
 import contextvars
 import os
 import sqlite3
+import time
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Set
 
@@ -60,6 +61,73 @@ SUBSCRIPTION_QUARK_MAX_ATTEMPTS = max(
     8,
     min(120, int(os.getenv("SUBSCRIPTION_QUARK_MAX_ATTEMPTS", "60") or 60)),
 )
+
+_subscription_share_scan_settings_var: contextvars.ContextVar[Dict[str, Any]] = contextvars.ContextVar(
+    "subscription_share_scan_settings",
+    default={},
+)
+_subscription_share_fetch_rate_limit_lock = asyncio.Lock()
+_subscription_share_fetch_last_request_mono: Dict[str, float] = {}
+
+
+def get_subscription_share_scan_runtime_settings(
+    task: Optional[Dict[str, Any]] = None,
+    provider: str = "",
+) -> Dict[str, Any]:
+    runtime_settings = _subscription_share_scan_settings_var.get() or {}
+    if runtime_settings:
+        return normalize_subscription_scan_settings(runtime_settings, provider or runtime_settings.get("provider", ""))
+    return normalize_subscription_scan_settings(task or {}, provider)
+
+
+def set_subscription_share_scan_runtime_settings(
+    task: Dict[str, Any],
+    provider: str = "",
+) -> contextvars.Token:
+    normalized_provider = normalize_subscription_provider(provider or (task or {}).get("provider", "115"), fallback="115")
+    settings = {
+        **normalize_subscription_scan_settings(task or {}, normalized_provider),
+        "provider": normalized_provider,
+    }
+    return _subscription_share_scan_settings_var.set(settings)
+
+
+def reset_subscription_share_scan_runtime_settings(token: contextvars.Token) -> None:
+    _subscription_share_scan_settings_var.reset(token)
+
+
+def get_subscription_candidate_scan_prefetch_limit(task: Optional[Dict[str, Any]] = None, provider: str = "") -> int:
+    settings = get_subscription_share_scan_runtime_settings(task, provider)
+    return max(0, int(settings.get("candidate_scan_prefetch_limit", 0) or 0))
+
+
+def get_subscription_candidate_scan_concurrency(task: Optional[Dict[str, Any]] = None, provider: str = "") -> int:
+    settings = get_subscription_share_scan_runtime_settings(task, provider)
+    return max(1, min(6, int(settings.get("candidate_scan_concurrency", 1) or 1)))
+
+
+def get_subscription_share_scan_concurrency(task: Optional[Dict[str, Any]] = None, provider: str = "") -> int:
+    settings = get_subscription_share_scan_runtime_settings(task, provider)
+    return max(1, min(6, int(settings.get("share_scan_concurrency", 1) or 1)))
+
+
+def get_subscription_share_scan_rate_limit_seconds(task: Optional[Dict[str, Any]] = None, provider: str = "") -> float:
+    settings = get_subscription_share_scan_runtime_settings(task, provider)
+    return max(0.05, min(5.0, float(settings.get("share_scan_rate_limit_seconds", 1.0) or 1.0)))
+
+
+async def _throttle_subscription_share_fetch(provider: str, rate_limit_seconds: float) -> None:
+    min_interval = max(0.0, float(rate_limit_seconds or 0.0))
+    if min_interval <= 0:
+        return
+    provider_key = normalize_subscription_provider(provider, fallback="115")
+    async with _subscription_share_fetch_rate_limit_lock:
+        now_mono = time.monotonic()
+        last_mono = float(_subscription_share_fetch_last_request_mono.get(provider_key, 0.0) or 0.0)
+        wait_seconds = min_interval - (now_mono - last_mono)
+        if wait_seconds > 0:
+            await asyncio.sleep(wait_seconds)
+        _subscription_share_fetch_last_request_mono[provider_key] = time.monotonic()
 SUBSCRIPTION_INVALID_LINK_STRONG_HINTS = (
     "链接无效",
     "链接失效",
@@ -278,7 +346,12 @@ async def _fetch_subscription_share_entries(
         if isinstance(cached_payload, dict) and cached_payload:
             return cached_payload
 
+    settings = get_subscription_share_scan_runtime_settings(provider="quark" if link_type == "quark" else "115")
+    request_timeout_seconds = max(6, min(30, int(SUBSCRIPTION_SHARE_SCAN_REQUEST_TIMEOUT_SECONDS or 12)))
+    share_rate_limit_seconds = float(settings.get("share_scan_rate_limit_seconds", SUBSCRIPTION_SHARE_SCAN_RATE_LIMIT_SECONDS) or SUBSCRIPTION_SHARE_SCAN_RATE_LIMIT_SECONDS)
+
     if link_type == "quark":
+        await _throttle_subscription_share_fetch("quark", share_rate_limit_seconds)
         result = await asyncio.to_thread(
             list_quark_share_entries,
             cookie,
@@ -287,7 +360,7 @@ async def _fetch_subscription_share_entries(
             normalized_cid,
             normalized_receive_code,
             refresh_pending,
-            SUBSCRIPTION_SHARE_SCAN_REQUEST_TIMEOUT_SECONDS,
+            request_timeout_seconds,
         )
     else:
         result = await asyncio.to_thread(
@@ -298,8 +371,8 @@ async def _fetch_subscription_share_entries(
             normalized_cid,
             normalized_receive_code,
             refresh_pending,
-            SUBSCRIPTION_SHARE_SCAN_REQUEST_TIMEOUT_SECONDS,
-            SUBSCRIPTION_SHARE_SCAN_RATE_LIMIT_SECONDS,
+            request_timeout_seconds,
+            share_rate_limit_seconds,
             SUBSCRIPTION_SHARE_SCAN_MAX_RETRIES,
         )
     if isinstance(runtime_cache, dict):
@@ -514,6 +587,13 @@ __all__ = [
     "SUBSCRIPTION_SHARE_SCAN_NORMAL_MAX_ENTRIES",
     "SUBSCRIPTION_SHARE_SCAN_HIGH_PRIORITY_MAX_ENTRIES",
     "SUBSCRIPTION_QUARK_MAX_ATTEMPTS",
+    "get_subscription_share_scan_runtime_settings",
+    "set_subscription_share_scan_runtime_settings",
+    "reset_subscription_share_scan_runtime_settings",
+    "get_subscription_candidate_scan_prefetch_limit",
+    "get_subscription_candidate_scan_concurrency",
+    "get_subscription_share_scan_concurrency",
+    "get_subscription_share_scan_rate_limit_seconds",
     "SUBSCRIPTION_INVALID_LINK_STRONG_HINTS",
     "SUBSCRIPTION_INVALID_LINK_TRANSIENT_HINTS",
     "_subscription_share_entry_runtime_cache_var",

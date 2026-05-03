@@ -132,10 +132,30 @@ async def get_monitor_status(request: Request) -> Dict[str, Any]:
     return build_monitor_status_payload(compact=compact)
 
 
+@router.get("/monitor/logs/tasks")
+async def get_monitor_log_tasks(request: Request) -> Dict[str, Any]:
+    offset = max(0, int(request.query_params.get("offset", 0) or 0))
+    limit = max(1, min(10, int(request.query_params.get("limit", MONITOR_UI_RECENT_TASK_LOG_LIMIT) or MONITOR_UI_RECENT_TASK_LOG_LIMIT)))
+    page = build_monitor_log_segment_page(offset=offset, limit=limit, source="file")
+    return {
+        "ok": True,
+        "segments": page["segments"],
+        "total": page["total"],
+        "offset": page["offset"],
+        "limit": page["limit"],
+        "has_more": page["has_more"],
+        "next_offset": page["next_offset"],
+    }
+
+
 @router.post("/monitor/logs/clear")
 async def clear_monitor_logs(request: Request) -> Dict[str, Any]:
-    monitor_status["logs"] = [{"text": f"{format_log_time(True)} 监控日志已清空", "level": "info"}]
-    await asyncio.to_thread(clear_log_file, MONITOR_LOG_PATH, f"{format_log_time(True)} 监控日志已清空")
+    line = f"{format_log_time(True)} 监控日志已清空"
+    entry = {"text": line, "level": "info"}
+    monitor_status["logs"] = [entry]
+    monitor_status["log_segment_total"] = 0
+    monitor_status["log_segments"] = build_monitor_log_segments_from_entries([entry])
+    await asyncio.to_thread(clear_log_file, MONITOR_LOG_PATH, line)
     schedule_ui_state_push(0)
     return {"ok": True}
 

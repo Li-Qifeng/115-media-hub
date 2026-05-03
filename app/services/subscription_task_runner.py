@@ -143,7 +143,7 @@ async def _prewarm_subscription_candidate_share_manifests(
     if not normalized_cookie:
         return {"enabled": False, "reason": "cookie_missing"}
     normalized_provider = normalize_subscription_provider(provider, fallback="115")
-    configured_prefetch_limit = max(0, int(SUBSCRIPTION_CANDIDATE_SCAN_PREFETCH_LIMIT or 0))
+    configured_prefetch_limit = get_subscription_candidate_scan_prefetch_limit(task, normalized_provider)
     if configured_prefetch_limit <= 0:
         return {"enabled": False, "reason": "prefetch_disabled"}
     requested_prefetch_limit = max(0, int(max_candidates or 0))
@@ -162,12 +162,7 @@ async def _prewarm_subscription_candidate_share_manifests(
     if not rows:
         return {"enabled": False, "reason": "no_candidates"}
 
-    concurrency = (
-        int(SUBSCRIPTION_QUARK_CANDIDATE_SCAN_CONCURRENCY or 1)
-        if normalized_provider == "quark"
-        else int(SUBSCRIPTION_115_CANDIDATE_SCAN_CONCURRENCY or 1)
-    )
-    concurrency = max(1, min(6, concurrency))
+    concurrency = get_subscription_candidate_scan_concurrency(task, normalized_provider)
     normal_max_entries = max(0, int(SUBSCRIPTION_SHARE_SCAN_NORMAL_MAX_ENTRIES or 0))
     high_max_entries = max(normal_max_entries, int(SUBSCRIPTION_SHARE_SCAN_HIGH_PRIORITY_MAX_ENTRIES or 0))
     started_at = time.perf_counter()
@@ -568,6 +563,22 @@ async def _write_subscription_task_overview(
                 f"批次收口: {batch_refresh_label}"
                 + (f" | 最小文件 {min_file_size_mb:g}MB" if min_file_size_mb > 0 else "")
                 + (f" | 排除词: {len(exclude_keywords)}个" if exclude_keywords else ""),
+    )
+    scan_settings = normalize_subscription_scan_settings(task, task.get("provider", "115"))
+    await write_subscription_log(
+        (
+            f"访问策略: 候选精查上限 {int(scan_settings.get('candidate_scan_prefetch_limit', 0) or 0)} | "
+            f"候选并发 {int(scan_settings.get('candidate_scan_concurrency', 1) or 1)} | "
+            f"目录并发 {int(scan_settings.get('share_scan_concurrency', 1) or 1)} | "
+            f"分享请求间隔 {float(scan_settings.get('share_scan_rate_limit_seconds', 0) or 0):g}s"
+        ),
+        "info",
+        compact=(
+            f"访问策略 | 候选上限 {int(scan_settings.get('candidate_scan_prefetch_limit', 0) or 0)} · "
+            f"候选并发 {int(scan_settings.get('candidate_scan_concurrency', 1) or 1)} · "
+            f"目录并发 {int(scan_settings.get('share_scan_concurrency', 1) or 1)} · "
+            f"间隔 {float(scan_settings.get('share_scan_rate_limit_seconds', 0) or 0):g}s"
+        ),
     )
 
     if int(task.get("tmdb_id", 0) or 0) > 0:
@@ -1961,6 +1972,7 @@ async def run_subscription_task(
     update_subscription_summary("准备执行", f"{task_name} ({trigger})")
     schedule_ui_state_push(0)
     run_started_at = now_text()
+    scan_runtime_settings = normalize_subscription_scan_settings(task, provider)
     upsert_subscription_task_state(
         task_name,
         media_type=task.get("media_type", "movie"),
@@ -1972,10 +1984,12 @@ async def run_subscription_task(
         stats={
             "run_id": subscription_run_id,
             "batch_refresh_enabled": batch_refresh_enabled,
+            "scan_settings": scan_runtime_settings,
         },
     )
     share_runtime_cache_token = _subscription_share_entry_runtime_cache_var.set({})
     share_refreshed_keys_token = _subscription_share_entry_refreshed_keys_var.set(set())
+    share_scan_settings_token = set_subscription_share_scan_runtime_settings(task, provider)
     subscription_log_context_token = set_subscription_log_context(
         {
             "run_id": subscription_run_id,
@@ -2949,14 +2963,15 @@ async def run_subscription_task(
                     else ""
                 )
                 runtime_scan_tail = _format_subscription_share_scan_log_tail(fixed_share_runtime_manifest)
+                scan_settings = normalize_subscription_scan_settings(task, "115")
                 await write_subscription_log(
                     (
                         f"固定链接运行期缓存已刷新：定位子目录 {_format_elapsed_seconds(runtime_subdir_elapsed_seconds)}，"
                         f"识别目录 {runtime_subdir_reason_label}{runtime_subdir_fallback_tail}，"
                         f"{runtime_scan_tail}，"
                         f"扫描耗时 {_format_elapsed_seconds(runtime_manifest_elapsed_seconds)}，"
-                        f"并发 {SUBSCRIPTION_SHARE_SCAN_CONCURRENCY}，"
-                        f"限速 {SUBSCRIPTION_SHARE_SCAN_RATE_LIMIT_SECONDS:g}s"
+                        f"并发 {int(scan_settings.get('share_scan_concurrency', 1) or 1)}，"
+                        f"限速 {float(scan_settings.get('share_scan_rate_limit_seconds', 0) or 0):g}s"
                     ),
                     "info",
                 )
@@ -4527,6 +4542,7 @@ async def run_subscription_task(
     finally:
         _subscription_share_entry_runtime_cache_var.reset(share_runtime_cache_token)
         _subscription_share_entry_refreshed_keys_var.reset(share_refreshed_keys_token)
+        reset_subscription_share_scan_runtime_settings(share_scan_settings_token)
         tail_status = "idle"
         try:
             tail_state = load_subscription_task_state(task_name, task.get("media_type", "movie"))

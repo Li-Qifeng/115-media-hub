@@ -8,8 +8,22 @@
             });
         }
 
-        const SUBSCRIPTION_LOG_RECENT_TASK_LIMIT = 5;
-        const SUBSCRIPTION_LOG_PAGE_TASK_LIMIT = 5;
+        const SUBSCRIPTION_LOG_RECENT_TASK_LIMIT = 3;
+        const SUBSCRIPTION_LOG_PAGE_TASK_LIMIT = 3;
+        const SUBSCRIPTION_SCAN_RECOMMENDED_DEFAULTS = {
+            '115': {
+                candidate_scan_prefetch_limit: 3,
+                candidate_scan_concurrency: 1,
+                share_scan_concurrency: 1,
+                share_scan_rate_limit_seconds: 1.0,
+            },
+            quark: {
+                candidate_scan_prefetch_limit: 8,
+                candidate_scan_concurrency: 2,
+                share_scan_concurrency: 2,
+                share_scan_rate_limit_seconds: 0.35,
+            },
+        };
         let subscriptionLogRows = [];
         let subscriptionLogOldestSeq = 0;
         let subscriptionLogNewestSeq = 0;
@@ -20,6 +34,7 @@
         let subscriptionLogPendingLatestSeq = 0;
         let subscriptionLogHydrated = false;
         let subscriptionLogLastPullAt = 0;
+        let subscriptionLogTaskTotal = 0;
 
         function getSubscriptionStatusLabel(status) {
             const normalized = String(status || 'idle').trim().toLowerCase();
@@ -267,6 +282,11 @@
                 .flatMap(block => Array.isArray(block?.entries) ? block.entries : []);
         }
 
+        function countSubscriptionLogTaskBlocks(rows = subscriptionLogRows) {
+            const blocks = buildSubscriptionLogBlocks(rows);
+            return blocks.filter(block => !!block.task).length;
+        }
+
         function tailSubscriptionLogBlocksByTaskCount(blocks, limit = SUBSCRIPTION_LOG_RECENT_TASK_LIMIT) {
             const list = Array.isArray(blocks) ? blocks : [];
             const normalizedLimit = Math.max(1, Number(limit || SUBSCRIPTION_LOG_RECENT_TASK_LIMIT) || SUBSCRIPTION_LOG_RECENT_TASK_LIMIT);
@@ -318,6 +338,7 @@
             subscriptionLogPendingLatestSeq = 0;
             subscriptionLogHydrated = false;
             subscriptionLogLastPullAt = 0;
+            subscriptionLogTaskTotal = 0;
             lastSubscriptionLogSignature = '';
         }
 
@@ -346,11 +367,19 @@
             }
             if (subscriptionLogHasMoreBefore) {
                 hint.className = 'mb-2 text-center';
-                hint.innerHTML = '<button type="button" class="text-xs px-3 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300" data-subscription-log-load-before>加载更早日志</button>';
+                hint.innerHTML = '<button type="button" class="text-xs px-3 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300" data-subscription-log-load-before>加载更早 3 条</button>';
                 return;
             }
             hint.className = 'hidden mb-2 text-center';
             hint.innerHTML = '';
+        }
+
+        function renderSubscriptionLogLoadSummary() {
+            const summary = document.getElementById('subscription-log-load-summary');
+            if (!summary) return;
+            const loaded = countSubscriptionLogTaskBlocks();
+            const total = Math.max(Number(subscriptionLogTaskTotal || 0) || 0, loaded);
+            summary.innerText = total > 0 ? `已加载 ${loaded} / ${total} 条` : '暂无任务日志';
         }
 
         function renderSubscriptionLogRows({ keepScroll = false } = {}) {
@@ -374,6 +403,7 @@
                 lastSubscriptionLogSignature = logSignature;
             }
             renderSubscriptionLogHistoryHint();
+            renderSubscriptionLogLoadSummary();
             if (keepScroll) {
                 box.scrollTop = previousScrollTop + Math.max(0, box.scrollHeight - previousScrollHeight);
             } else if (subscriptionLogFollowTail && wasAtBottom) {
@@ -394,6 +424,10 @@
                 params.set('limit', String(limit));
                 const payload = await window.MediaHubApi.getJson(`/subscription/logs?${params.toString()}`);
                 const rows = Array.isArray(payload.logs) ? payload.logs : [];
+                subscriptionLogTaskTotal = Math.max(
+                    Number(subscriptionLogTaskTotal || 0) || 0,
+                    Number(payload.task_block_total || 0) || 0,
+                );
                 mergeSubscriptionLogRows(rows, { prepend });
                 if (prepend || before > 0 || after <= 0) {
                     subscriptionLogHasMoreBefore = !!payload.has_more_before;
@@ -405,9 +439,11 @@
                 renderSubscriptionLogRows({ keepScroll: prepend });
             } catch (e) {
                 renderSubscriptionLogHistoryHint();
+                renderSubscriptionLogLoadSummary();
             } finally {
                 subscriptionLogLoading = false;
                 renderSubscriptionLogHistoryHint();
+                renderSubscriptionLogLoadSummary();
             }
         }
 
@@ -445,6 +481,11 @@
         function applySubscriptionLogMeta(logMeta) {
             const meta = logMeta && typeof logMeta === 'object' ? logMeta : {};
             const latestSeq = Number(meta.latest_seq || meta.total || meta.latest?.seq || 0);
+            subscriptionLogTaskTotal = Math.max(
+                Number(subscriptionLogTaskTotal || 0) || 0,
+                Number(meta.task_block_total || 0) || 0,
+            );
+            renderSubscriptionLogLoadSummary();
             subscriptionLogPendingLatestSeq = Math.max(subscriptionLogPendingLatestSeq, latestSeq);
             if (!subscriptionLogHydrated) {
                 scheduleSubscriptionLogRefresh(latestSeq);
@@ -501,6 +542,93 @@
 
         function getCurrentSubscriptionProvider() {
             return normalizeSubscriptionProvider(document.getElementById('subscription_provider')?.value || '115', '115');
+        }
+
+        function getSubscriptionScanRecommendedDefaults(provider = '115') {
+            const normalizedProvider = normalizeSubscriptionProvider(provider, '115');
+            return { ...(SUBSCRIPTION_SCAN_RECOMMENDED_DEFAULTS[normalizedProvider] || SUBSCRIPTION_SCAN_RECOMMENDED_DEFAULTS['115']) };
+        }
+
+        function normalizeSubscriptionScanInteger(value, fallback, minValue, maxValue) {
+            const parsed = parseInt(String(value ?? '').trim(), 10);
+            const normalized = Number.isFinite(parsed) ? parsed : fallback;
+            return Math.max(minValue, Math.min(maxValue, normalized));
+        }
+
+        function normalizeSubscriptionScanFloat(value, fallback, minValue, maxValue) {
+            const parsed = Number.parseFloat(String(value ?? '').trim());
+            const normalized = Number.isFinite(parsed) ? parsed : fallback;
+            return Math.round(Math.max(minValue, Math.min(maxValue, normalized)) * 100) / 100;
+        }
+
+        function normalizeSubscriptionScanSettings(value = {}, provider = '115') {
+            const payload = value && typeof value === 'object' ? value : {};
+            const defaults = getSubscriptionScanRecommendedDefaults(provider);
+            return {
+                candidate_scan_prefetch_limit: normalizeSubscriptionScanInteger(
+                    payload.candidate_scan_prefetch_limit ?? payload.candidate_scan_prewarm_limit ?? payload.scan_prewarm_limit,
+                    defaults.candidate_scan_prefetch_limit,
+                    0,
+                    80
+                ),
+                candidate_scan_concurrency: normalizeSubscriptionScanInteger(
+                    payload.candidate_scan_concurrency ?? payload.candidate_prewarm_concurrency,
+                    defaults.candidate_scan_concurrency,
+                    1,
+                    6
+                ),
+                share_scan_concurrency: normalizeSubscriptionScanInteger(
+                    payload.share_scan_concurrency ?? payload.scan_concurrency,
+                    defaults.share_scan_concurrency,
+                    1,
+                    6
+                ),
+                share_scan_rate_limit_seconds: normalizeSubscriptionScanFloat(
+                    payload.share_scan_rate_limit_seconds ?? payload.scan_rate_limit_seconds,
+                    defaults.share_scan_rate_limit_seconds,
+                    0.05,
+                    5
+                ),
+            };
+        }
+
+        function setSubscriptionScanSettingsToForm(settings = {}, provider = getCurrentSubscriptionProvider()) {
+            const normalized = normalizeSubscriptionScanSettings(settings, provider);
+            const prefetchEl = document.getElementById('subscription_candidate_scan_prefetch_limit');
+            const candidateConcurrencyEl = document.getElementById('subscription_candidate_scan_concurrency');
+            const shareConcurrencyEl = document.getElementById('subscription_share_scan_concurrency');
+            const rateLimitEl = document.getElementById('subscription_share_scan_rate_limit_seconds');
+            if (prefetchEl) prefetchEl.value = normalized.candidate_scan_prefetch_limit;
+            if (candidateConcurrencyEl) candidateConcurrencyEl.value = normalized.candidate_scan_concurrency;
+            if (shareConcurrencyEl) shareConcurrencyEl.value = normalized.share_scan_concurrency;
+            if (rateLimitEl) rateLimitEl.value = normalized.share_scan_rate_limit_seconds;
+            syncSubscriptionScanTuningHint(provider);
+        }
+
+        function readSubscriptionScanSettingsFromForm(provider = getCurrentSubscriptionProvider()) {
+            return normalizeSubscriptionScanSettings({
+                candidate_scan_prefetch_limit: document.getElementById('subscription_candidate_scan_prefetch_limit')?.value,
+                candidate_scan_concurrency: document.getElementById('subscription_candidate_scan_concurrency')?.value,
+                share_scan_concurrency: document.getElementById('subscription_share_scan_concurrency')?.value,
+                share_scan_rate_limit_seconds: document.getElementById('subscription_share_scan_rate_limit_seconds')?.value,
+            }, provider);
+        }
+
+        function syncSubscriptionScanTuningHint(provider = getCurrentSubscriptionProvider()) {
+            const normalizedProvider = normalizeSubscriptionProvider(provider, '115');
+            const defaults = getSubscriptionScanRecommendedDefaults(normalizedProvider);
+            const hintEl = document.getElementById('subscription-scan-tuning-hint');
+            if (!hintEl) return;
+            const providerLabel = getSubscriptionProviderLabel(normalizedProvider);
+            const reasonText = normalizedProvider === '115'
+                ? '115 建议保守一点，避免连续读取 share/snap 时触发 405 或 IP 限制。'
+                : 'Quark 可略高一些，但多设备或代理出口不稳定时也建议降低。';
+            hintEl.textContent = `${providerLabel} 建议：候选上限 ${defaults.candidate_scan_prefetch_limit}，候选并发 ${defaults.candidate_scan_concurrency}，目录并发 ${defaults.share_scan_concurrency}，请求间隔 ${defaults.share_scan_rate_limit_seconds}s。${reasonText}`;
+        }
+
+        function fillSubscriptionScanTuningDefaults() {
+            const provider = getCurrentSubscriptionProvider();
+            setSubscriptionScanSettingsToForm(getSubscriptionScanRecommendedDefaults(provider), provider);
         }
 
         function normalizeSubscriptionQualityPriority(value) {
@@ -801,6 +929,7 @@
             if (tmdbKeywordInput) tmdbKeywordInput.value = String(payload.title || '').trim();
             syncSubscriptionProviderUI();
             syncSubscriptionTypeUI();
+            setSubscriptionScanSettingsToForm(getSubscriptionScanRecommendedDefaults(provider), provider);
         }
 
         function parseSubscriptionAliases(value) {
@@ -1095,6 +1224,7 @@
                     ? '匹配策略：Quark 仅使用频道自动匹配，采用独立评分（强标题命中 + 集数命中）；仅集数命中会被拦截。'
                     : '匹配策略：若填写了固定 115 分享链接，默认只在该链接内扫描；可开启“固定链接后再补搜一次频道”作为兜底。未填写固定链接时，会在已启用频道按标题/别名主动搜索并评分命中。';
             }
+            syncSubscriptionScanTuningHint(provider);
 
             if (isQuark) {
                 const shareLinkInput = document.getElementById('subscription_share_link_url');
@@ -1184,6 +1314,7 @@
             const minFileSizeInput = document.getElementById('subscription_min_file_size_mb');
             const minFileSizeMb = normalizeSubscriptionMinFileSizeMb(minFileSizeInput?.value || '0');
             if (minFileSizeInput) minFileSizeInput.value = formatSubscriptionMinFileSizeMb(minFileSizeMb);
+            const scanSettings = readSubscriptionScanSettingsFromForm(provider);
             return {
                 name: title,
                 provider,
@@ -1209,6 +1340,10 @@
                 min_score: parseInt(document.getElementById('subscription_min_score').value || '55', 10) || 55,
                 quality_priority: normalizeSubscriptionQualityPriority(document.getElementById('subscription_quality_priority').value || 'ultra'),
                 min_file_size_mb: minFileSizeMb,
+                candidate_scan_prefetch_limit: scanSettings.candidate_scan_prefetch_limit,
+                candidate_scan_concurrency: scanSettings.candidate_scan_concurrency,
+                share_scan_concurrency: scanSettings.share_scan_concurrency,
+                share_scan_rate_limit_seconds: scanSettings.share_scan_rate_limit_seconds,
                 enabled: document.getElementById('subscription_enabled').checked,
                 tmdb_id: tmdbBinding.tmdb_id,
                 tmdb_media_type: tmdbBinding.tmdb_media_type,
@@ -1259,6 +1394,7 @@
             document.getElementById('subscription_min_score').value = 55;
             document.getElementById('subscription_min_file_size_mb').value = 0;
             document.getElementById('subscription_quality_priority').value = 'ultra';
+            setSubscriptionScanSettingsToForm(getSubscriptionScanRecommendedDefaults('115'), '115');
             document.getElementById('subscription_enabled').checked = true;
             clearSubscriptionTmdbBinding({ silent: true });
             subscriptionTmdbResults = [];
@@ -1456,6 +1592,7 @@
             document.getElementById('subscription_min_score').value = task.min_score ?? 55;
             document.getElementById('subscription_min_file_size_mb').value = formatSubscriptionMinFileSizeMb(task.min_file_size_mb ?? 0);
             document.getElementById('subscription_quality_priority').value = normalizeSubscriptionQualityPriority(task.quality_priority || 'balanced');
+            setSubscriptionScanSettingsToForm(task, normalizeSubscriptionProvider(task.provider || '115', '115'));
             document.getElementById('subscription_enabled').checked = task.enabled !== false;
             setSubscriptionTmdbBinding({
                 tmdb_id: task.tmdb_id || 0,

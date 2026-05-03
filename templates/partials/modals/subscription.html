@@ -117,6 +117,31 @@
                         Quark 模式仅使用频道自动匹配，不支持固定分享链接模式；评分采用独立规则（强标题命中 + 集数匹配）。
                     </div>
                     <div class="rounded-2xl border border-slate-700 bg-slate-900/60 p-4 space-y-3">
+                        <div class="flex flex-wrap items-center justify-between gap-2">
+                            <div class="text-xs text-slate-500">候选精查访问策略</div>
+                            <button type="button" onclick="fillSubscriptionScanTuningDefaults()" class="px-3 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-white text-xs font-bold">填入建议值</button>
+                        </div>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <label class="block">
+                                <span class="text-xs text-slate-500">候选精查上限</span>
+                                <input id="subscription_candidate_scan_prefetch_limit" type="number" min="0" max="80" step="1" class="w-full bg-slate-900 border-slate-700 rounded-xl p-3 text-sm mt-1" value="3">
+                            </label>
+                            <label class="block">
+                                <span class="text-xs text-slate-500">候选并发</span>
+                                <input id="subscription_candidate_scan_concurrency" type="number" min="1" max="6" step="1" class="w-full bg-slate-900 border-slate-700 rounded-xl p-3 text-sm mt-1" value="1">
+                            </label>
+                            <label class="block">
+                                <span class="text-xs text-slate-500">目录扫描并发</span>
+                                <input id="subscription_share_scan_concurrency" type="number" min="1" max="6" step="1" class="w-full bg-slate-900 border-slate-700 rounded-xl p-3 text-sm mt-1" value="1">
+                            </label>
+                            <label class="block">
+                                <span class="text-xs text-slate-500">分享请求间隔（秒）</span>
+                                <input id="subscription_share_scan_rate_limit_seconds" type="number" min="0.05" max="5" step="0.05" class="w-full bg-slate-900 border-slate-700 rounded-xl p-3 text-sm mt-1" value="1">
+                            </label>
+                        </div>
+                        <div id="subscription-scan-tuning-hint" class="text-[11px] text-slate-500 leading-5">115 建议：候选上限 3，候选并发 1，目录并发 1，请求间隔 1s。</div>
+                    </div>
+                    <div class="rounded-2xl border border-slate-700 bg-slate-900/60 p-4 space-y-3">
                         <div class="text-xs text-slate-500">自动查询时段</div>
                         <div class="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-7 gap-2" id="subscription_schedule_weekdays">
                             <label class="flex items-center justify-center gap-2 rounded-xl border border-slate-700 px-3 py-2 text-sm cursor-pointer">

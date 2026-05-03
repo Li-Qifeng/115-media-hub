@@ -5,6 +5,23 @@ export async function ensureTabData(context) {
     }
 }
 
+function mergeMonitorLogSegments(currentState, data) {
+    const incoming = Array.isArray(data?.log_segments) ? data.log_segments : null;
+    if (!incoming) return Array.isArray(currentState?.log_segments) ? currentState.log_segments : [];
+
+    const current = Array.isArray(currentState?.log_segments) ? currentState.log_segments : [];
+    const previousTotal = Number(currentState?.log_segment_total || 0) || current.length;
+    const nextTotal = Number(data?.log_segment_total || 0) || incoming.length;
+    if (nextTotal < previousTotal || current.length <= incoming.length) return incoming;
+
+    const incomingIds = new Set(incoming.map((segment) => String(segment?.id || '')).filter(Boolean));
+    const older = current.filter((segment) => {
+        const id = String(segment?.id || '');
+        return id && !incomingIds.has(id);
+    });
+    return [...older, ...incoming];
+}
+
 export function applyMonitorState(data, {
     forceRender = false,
     getMonitorState,
@@ -21,11 +38,16 @@ export function applyMonitorState(data, {
 } = {}) {
     if (!data) return;
     const currentMonitorState = typeof getMonitorState === 'function' ? (getMonitorState() || {}) : {};
+    const logSegments = mergeMonitorLogSegments(currentMonitorState, data);
+    const logSegmentTotal = Number(data.log_segment_total || currentMonitorState.log_segment_total || logSegments.length) || logSegments.length;
     const nextState = {
         ...currentMonitorState,
         ...data,
         tasks: Array.isArray(data.tasks) ? data.tasks : (currentMonitorState.tasks || []),
         logs: Array.isArray(data.logs) ? data.logs : (currentMonitorState.logs || []),
+        log_segments: logSegments,
+        log_segment_total: logSegmentTotal,
+        log_segment_has_more: logSegments.length < logSegmentTotal,
         queued: Array.isArray(data.queued) ? data.queued : (currentMonitorState.queued || []),
         next_runs: data.next_runs || currentMonitorState.next_runs || {},
         summary: data.summary || currentMonitorState.summary || { step: '空闲', detail: '等待监控任务' }

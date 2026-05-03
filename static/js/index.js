@@ -1,5 +1,5 @@
         let isRunning = false;
-        let monitorState = { running: false, current_task: '', tasks: [], logs: [], summary: { step: '空闲', detail: '等待监控任务' }, queued: [], next_runs: {} };
+        let monitorState = { running: false, current_task: '', tasks: [], logs: [], log_segments: [], log_segment_total: 0, log_segment_has_more: false, summary: { step: '空闲', detail: '等待监控任务' }, queued: [], next_runs: {} };
         let subscriptionState = { running: false, current_task: '', tasks: [], logs: [], summary: { step: '空闲', detail: '等待订阅任务' }, queued: [], next_runs: {} };
         let sign115State = {
             enabled: false,
@@ -172,6 +172,7 @@
         let resourceTgLastLatencyMs = 0;
         let lastLogSignature = '';
         let lastMonitorLogSignature = '';
+        let monitorLogLoadBusy = false;
         let lastSubscriptionLogSignature = '';
         let lastMonitorRenderKey = '';
         let lastSubscriptionRenderKey = '';
@@ -1502,11 +1503,31 @@
                 return;
             }
             if (!data) return;
+            const incomingSegments = Array.isArray(data.log_segments) ? data.log_segments : null;
+            const currentSegments = Array.isArray(monitorState.log_segments) ? monitorState.log_segments : [];
+            let logSegments = currentSegments;
+            if (incomingSegments) {
+                const previousTotal = Number(monitorState.log_segment_total || 0) || currentSegments.length;
+                const nextTotal = Number(data.log_segment_total || 0) || incomingSegments.length;
+                if (nextTotal < previousTotal || currentSegments.length <= incomingSegments.length) {
+                    logSegments = incomingSegments;
+                } else {
+                    const incomingIds = new Set(incomingSegments.map(segment => String(segment?.id || '')).filter(Boolean));
+                    const olderSegments = currentSegments.filter(segment => {
+                        const id = String(segment?.id || '');
+                        return id && !incomingIds.has(id);
+                    });
+                    logSegments = [...olderSegments, ...incomingSegments];
+                }
+            }
             monitorState = {
                 ...monitorState,
                 ...data,
                 tasks: Array.isArray(data.tasks) ? data.tasks : (monitorState.tasks || []),
                 logs: Array.isArray(data.logs) ? data.logs : (monitorState.logs || []),
+                log_segments: logSegments,
+                log_segment_total: Number(data.log_segment_total || monitorState.log_segment_total || logSegments.length) || logSegments.length,
+                log_segment_has_more: logSegments.length < (Number(data.log_segment_total || monitorState.log_segment_total || logSegments.length) || logSegments.length),
                 queued: Array.isArray(data.queued) ? data.queued : (monitorState.queued || []),
                 next_runs: data.next_runs || monitorState.next_runs || {},
                 summary: data.summary || monitorState.summary || { step: '空闲', detail: '等待监控任务' }
@@ -2840,14 +2861,85 @@
             }).join('');
         }
 
-        function renderMonitorLogs() {
+        function buildMonitorLogSignature() {
+            const segments = Array.isArray(monitorState.log_segments) && monitorState.log_segments.length
+                ? monitorState.log_segments
+                : [{ id: 'legacy', entries: monitorState.logs || [] }];
+            return buildLogSignature(segments, (segment) => {
+                const entries = Array.isArray(segment?.entries) ? segment.entries : [];
+                return `${segment?.id || ''}:${segment?.entry_count || entries.length}:${segment?.complete ? 1 : 0}:${entries.map((item) => `${item?.level || 'info'}:${item?.text || ''}`).join('||')}`;
+            });
+        }
+
+        function updateMonitorLogSegmentSummary() {
+            const summary = document.getElementById('monitor-log-segment-summary');
+            const loadMoreBtn = document.getElementById('monitor-log-load-more');
+            if (summary) {
+                const total = Number(monitorState.log_segment_total || 0) || 0;
+                const visible = Array.isArray(monitorState.log_segments) && monitorState.log_segments.length
+                    ? monitorState.log_segments.filter(segment => String(segment?.kind || '') === 'task').length || monitorState.log_segments.length
+                    : (Array.isArray(monitorState.logs) ? 1 : 0);
+                summary.innerText = total > 0 ? `已显示最近 ${visible} / ${total} 条任务` : '暂无任务日志';
+            }
+            if (loadMoreBtn) {
+                const hasMore = !!monitorState.log_segment_has_more;
+                loadMoreBtn.classList.toggle('hidden', !hasMore);
+                loadMoreBtn.disabled = !hasMore || monitorLogLoadBusy;
+                loadMoreBtn.innerText = monitorLogLoadBusy ? '加载中...' : '加载更早 3 条';
+            }
+        }
+
+        function renderMonitorLogs({ preserveScroll = false } = {}) {
             const box = document.getElementById('monitor-log-box');
-            const logs = monitorState.logs || [];
-            const logSignature = buildLogSignature(logs, (item) => `${item?.level || 'info'}:${item?.text || ''}`);
-            if (logSignature === lastMonitorLogSignature) return;
+            const segments = Array.isArray(monitorState.log_segments) && monitorState.log_segments.length
+                ? monitorState.log_segments
+                : null;
+            const logSignature = buildMonitorLogSignature();
+            if (logSignature === lastMonitorLogSignature) {
+                updateMonitorLogSegmentSummary();
+                return;
+            }
+            const previousScrollTop = preserveScroll ? box.scrollTop : 0;
+            const previousScrollHeight = preserveScroll ? box.scrollHeight : 0;
+            const logs = segments
+                ? segments.flatMap(segment => Array.isArray(segment?.entries) ? segment.entries : [])
+                : (monitorState.logs || []);
             box.innerHTML = logs.map(item => `<div class="${getLogEntryClass(item)}">${formatMonitorLogHtml(item)}</div>`).join('');
-            box.scrollTop = box.scrollHeight;
+            if (preserveScroll) {
+                box.scrollTop = Math.max(0, box.scrollHeight - previousScrollHeight + previousScrollTop);
+            } else {
+                box.scrollTop = box.scrollHeight;
+            }
             lastMonitorLogSignature = logSignature;
+            updateMonitorLogSegmentSummary();
+        }
+
+        async function loadOlderMonitorLogs() {
+            if (monitorLogLoadBusy || !monitorState.log_segment_has_more) return;
+            monitorLogLoadBusy = true;
+            updateMonitorLogSegmentSummary();
+            try {
+                const offset = Array.isArray(monitorState.log_segments)
+                    ? monitorState.log_segments.filter(segment => String(segment?.kind || '') === 'task').length
+                    : 0;
+                const data = await window.MediaHubApi.getJson(`/monitor/logs/tasks?offset=${offset}&limit=3`);
+                const olderSegments = Array.isArray(data?.segments) ? data.segments : [];
+                const currentSegments = Array.isArray(monitorState.log_segments) ? monitorState.log_segments : [];
+                const existingIds = new Set(currentSegments.map(segment => String(segment?.id || '')).filter(Boolean));
+                const merged = [
+                    ...olderSegments.filter(segment => !existingIds.has(String(segment?.id || ''))),
+                    ...currentSegments,
+                ];
+                monitorState = {
+                    ...monitorState,
+                    log_segments: merged,
+                    log_segment_total: Number(data?.total || monitorState.log_segment_total || merged.length) || merged.length,
+                    log_segment_has_more: !!data?.has_more,
+                };
+                renderMonitorLogs({ preserveScroll: true });
+            } catch (e) {}
+            monitorLogLoadBusy = false;
+            updateMonitorLogSegmentSummary();
         }
 
         async function refreshMainLogs({ compact = false } = {}) {
