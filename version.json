@@ -1,9 +1,11 @@
 {
-  "version": "0.3.16",
-  "buildDate": "2026-05-08T01:31:28+08:00",
+  "version": "0.3.17",
+  "buildDate": "2026-05-09T11:38:31+08:00",
   "notes": [
-    "订阅成功日志新增本轮集数导入汇总",
-    "订阅导入汇总按是否新增集数区分颜色"
+    "刮削识别关键词过滤通用分类目录",
+    "刮削标题清洗减少发布组和技术标签噪声",
+    "统一媒体标签解析并保留音频声道信息",
+    "GitHub Actions 自动发布 Docker 镜像"
   ],
   "changelogUrl": "https://github.com/xianer235/115-media-hub/blob/main/CHANGELOG.md",
   "projectUrl": "https://github.com/xianer235/115-media-hub"

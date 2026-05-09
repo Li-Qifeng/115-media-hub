@@ -1,5 +1,6 @@
 import os
 import re
+import unicodedata
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ..core import *  # noqa: F401,F403
@@ -18,49 +19,101 @@ from ..providers.quark import (
     move_quark_entries,
     rename_quark_entry,
 )
+from ..media_tags import media_tag_labels, remove_media_tags
 from ..services.subscription_episode import _extract_task_episodes_from_file_entry
-from ..subscription_scoring import parse_resource_episode_meta
 
 
 SCRAPER_JOB_LIMIT_DEFAULT = 20
 SCRAPER_SCAN_MAX_DIRS = 80
 SCRAPER_SCAN_MAX_ENTRIES = 1200
 SCRAPER_JOB_ACTIVE_STATUSES = ("pending", "running", "rollback_running")
-SCRAPER_TAG_PATTERNS: Dict[str, List[Tuple[str, str]]] = {
-    "resolution": [
-        (r"\b(?:4320p|8k)\b", "8K"),
-        (r"\b(?:2160p|4k|uhd)\b", "2160p"),
-        (r"\b1080p\b", "1080p"),
-        (r"\b720p\b", "720p"),
-        (r"\b480p\b", "480p"),
-    ],
-    "source": [
-        (r"\bremux\b", "REMUX"),
-        (r"\b(?:blu[-_. ]?ray|bdrip|bdremux)\b", "BluRay"),
-        (r"\bweb[-_. ]?dl\b", "WEB-DL"),
-        (r"\bwebrip\b", "WEBRip"),
-        (r"\bhdtv\b", "HDTV"),
-    ],
-    "dynamic_range": [
-        (r"\bdolby[ ._-]?vision\b|\bdv\b", "DV"),
-        (r"\bhdr10\+?\b", "HDR10"),
-        (r"\bhdr\b", "HDR"),
-    ],
-    "video": [
-        (r"\bhevc\b|\bh\.?265\b|\bx265\b", "HEVC"),
-        (r"\bh\.?264\b|\bx264\b", "H.264"),
-        (r"\bav1\b", "AV1"),
-        (r"\b10[-_. ]?bit\b", "10bit"),
-    ],
-    "audio": [
-        (r"\batmos\b", "Atmos"),
-        (r"\btruehd\b", "TrueHD"),
-        (r"\bdts[-_. ]?hd\b", "DTS-HD"),
-        (r"\bdts\b", "DTS"),
-        (r"\bddp\d?(?:[._ ]?\d)?\b|\bdd\+?\b", "DDP"),
-        (r"\baac\b", "AAC"),
-        (r"\bflac\b", "FLAC"),
-    ],
+SCRAPER_GENERIC_CATEGORY_KEYS = {
+    "movie",
+    "movies",
+    "film",
+    "films",
+    "tv",
+    "tvshow",
+    "tvshows",
+    "series",
+    "show",
+    "shows",
+    "anime",
+    "animation",
+    "animations",
+    "cartoon",
+    "cartoons",
+    "documentary",
+    "documentaries",
+    "variety",
+    "media",
+    "video",
+    "videos",
+    "resource",
+    "resources",
+    "download",
+    "downloads",
+    "sorted",
+    "scraped",
+    "collection",
+    "collections",
+    "4k",
+    "8k",
+    "1080p",
+    "2160p",
+    "720p",
+    "480p",
+    "电影",
+    "影片",
+    "电视剧",
+    "剧集",
+    "剧",
+    "美剧",
+    "日剧",
+    "韩剧",
+    "国剧",
+    "港剧",
+    "动漫",
+    "动画",
+    "動畫",
+    "番剧",
+    "新番",
+    "综艺",
+    "紀錄片",
+    "纪录片",
+    "纪录",
+    "紀錄",
+    "资源",
+    "資源",
+    "下载",
+    "下載",
+    "媒体",
+    "视频",
+    "影片库",
+    "片库",
+    "已整理",
+    "已刮削",
+    "已命名",
+    "整理",
+    "刮削",
+    "高清",
+    "蓝光",
+    "藍光",
+}
+SCRAPER_TRAILING_RELEASE_TOKENS = {
+    "nf",
+    "netflix",
+    "amzn",
+    "amazon",
+    "dsnp",
+    "disney",
+    "hulu",
+    "atvp",
+    "apple",
+    "max",
+    "hbo",
+    "paramount",
+    "peacock",
 }
 
 
@@ -346,26 +399,66 @@ def _is_scraper_excluded_archive(name: str) -> bool:
     return os.path.splitext(str(name or "").strip())[1].lower() in {".zip", ".rar"}
 
 
+def _normalize_scraper_keyword_compact(value: str) -> str:
+    text = unicodedata.normalize("NFKC", str(value or "").strip()).lower()
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", text)
+
+
+def _trim_scraper_trailing_noise_tokens(value: str) -> str:
+    tokens = str(value or "").strip().split()
+    while len(tokens) >= 3 and tokens[-1].lower() in (SCRAPER_TRAILING_RELEASE_TOKENS | {"h", "x"}):
+        tokens.pop()
+    return " ".join(tokens)
+
+
+def _is_scraper_generic_keyword(value: str) -> bool:
+    key = _normalize_scraper_keyword_compact(value)
+    if not key:
+        return True
+    if key in SCRAPER_GENERIC_CATEGORY_KEYS:
+        return True
+    return bool(
+        re.fullmatch(
+            r"(?:电影|影片|电视剧|剧集|动漫|动画|動畫|番剧|新番|综艺|纪录片|紀錄片|纪录|紀錄|资源|資源|下载|下載|媒体|视频|高清|蓝光|藍光)"
+            r"(?:资源|資源|下载|下載|合集|合輯|整理|已整理|已刮削|已命名|库|庫)?",
+            key,
+        )
+    )
+
+
+def _is_scraper_noise_keyword(value: str) -> bool:
+    cleaned = str(value or "").strip()
+    key = _scraper_keyword_key(cleaned)
+    if not key:
+        return True
+    if _is_scraper_generic_keyword(cleaned):
+        return True
+    if re.fullmatch(r"(?:s\d{1,2}|season\d{1,2}|e\d{1,4}|ep\d{1,4}|\d{1,4})", key, re.I):
+        return True
+    if re.fullmatch(r"第[零〇一二三四五六七八九十两兩0-9]{1,4}(?:季|集|话|話)", cleaned):
+        return True
+    return False
+
+
 def _clean_search_title(value: str) -> str:
-    text = _strip_extension(value)
-    text = re.sub(r"[\[\(（【].{0,90}?(?:2160p|1080p|720p|4k|uhd|hdr|web[-_. ]?dl|bluray|remux|x26[45]|hevc|aac|dts|atmos|第.+?季|s\d{1,2}e\d{1,4}).{0,90}?[\]\)）】]", " ", text, flags=re.I)
+    text = unicodedata.normalize("NFKC", _strip_extension(value))
+    text = remove_media_tags(text)
+    text = re.sub(r"[\[\(（【][^\]\)）】]{0,90}?(?:第.+?季|s\d{1,2}e\d{1,4})[^\]\)）】]{0,90}?[\]\)）】]", " ", text, flags=re.I)
+    text = re.sub(r"^[\[\(（【][A-Za-z0-9][A-Za-z0-9._ +&-]{0,40}[\]\)）】]\s*", " ", text)
+    text = re.sub(r"[\[\(（【][A-Za-z0-9][A-Za-z0-9._ +&-]{0,60}[\]\)）】]", " ", text)
     text = re.sub(r"\b(19|20)\d{2}\b", " ", text)
     text = re.sub(r"\bS\d{1,2}\s*E\d{1,4}\b|\bEP?\s*\d{1,4}\b|\bE\d{1,4}\b", " ", text, flags=re.I)
     text = re.sub(r"\bS\d{1,2}\b|\bSeason\s*\d{1,2}\b", " ", text, flags=re.I)
     text = re.sub(r"第\s*[零〇一二三四五六七八九十两兩0-9]{1,4}\s*(?:季|集|话|話)", " ", text)
     text = re.sub(r"(?:全|共)\s*\d{1,4}\s*(?:集|话|話)", " ", text)
-    text = re.sub(
-        r"\b(?:2160p|1080p|720p|480p|4k|8k|uhd|web[-_. ]?dl|webrip|blu[-_. ]?ray|bdrip|"
-        r"bdremux|remux|hdtv|hdr10\+?|hdr|dolby[ ._-]?vision|dv|hevc|h\.?265|x265|h\.?264|x264|"
-        r"av1|aac|flac|ddp\d?(?:[._ ]?\d)?|dd\+?|dd\d(?:[._ ]?\d)?|dts[-_. ]?hd|dts|truehd|atmos|10[-_. ]?bit)\b",
-        " ",
-        text,
-        flags=re.I,
-    )
     text = re.sub(r"\b(?:complete|proper|repack|extended|uncut|internal|multi|chs|cht|gb|big5|简繁|简中|繁中|中字|字幕)\b", " ", text, flags=re.I)
+    if _contains_cjk(text):
+        text = re.sub(r"(?:^|[\s._-]+)\d{1,4}(?=\s*$)", " ", text)
+    text = re.sub(r"[\[\]{}()<>【】（）「」『』]+", " ", text)
     text = re.sub(r"[\._\-]+", " ", text)
     text = re.sub(r"\s*(?:\||/|／|·|•)\s*", " ", text)
     text = re.sub(r"\s+", " ", text).strip(" -_.")
+    text = _trim_scraper_trailing_noise_tokens(text)
     return text or _strip_extension(value)
 
 
@@ -392,11 +485,12 @@ def _split_scraper_title_parts(value: str) -> List[str]:
 
 def _common_scraper_prefix(names: List[str]) -> str:
     cleaned = [_clean_search_title(name) for name in names if str(name or "").strip()]
-    cleaned = [item for item in cleaned if len(_scraper_keyword_key(item)) >= 2]
+    cleaned = [item for item in cleaned if len(_scraper_keyword_key(item)) >= 2 and not _is_scraper_noise_keyword(item)]
     if len(cleaned) < 2:
         return ""
     prefix = os.path.commonprefix(cleaned).strip(" -_.")
-    return _clean_search_title(prefix) if len(_scraper_keyword_key(prefix)) >= 2 else ""
+    candidate = _clean_search_title(prefix)
+    return candidate if len(_scraper_keyword_key(candidate)) >= 2 and not _is_scraper_noise_keyword(candidate) else ""
 
 
 def build_scraper_keyword_suggestions(selected: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -405,7 +499,7 @@ def build_scraper_keyword_suggestions(selected: List[Dict[str, Any]]) -> List[Di
     def add_candidate(raw: str, score: int, source: str = "") -> None:
         cleaned = _clean_search_title(raw)
         key = _scraper_keyword_key(cleaned)
-        if len(key) < 2:
+        if len(key) < 2 or _is_scraper_noise_keyword(cleaned):
             return
         if len(cleaned) > 80:
             cleaned = cleaned[:80].strip()
@@ -452,14 +546,13 @@ def build_scraper_keyword_suggestions(selected: List[Dict[str, Any]]) -> List[Di
         if not keyword:
             continue
         score = int(item.get("score", 0) or 0)
-        key = _scraper_keyword_key(keyword)
         sources = item.get("sources", set()) if isinstance(item.get("sources"), set) else set()
-        if re.fullmatch(r"(?:s\d{1,2}|season\d{1,2}|\d{1,4})", key, re.I):
-            score -= 35
+        if _is_scraper_noise_keyword(keyword):
+            continue
         if _contains_cjk(keyword):
             score += 25
         if "父文件夹" in sources:
-            score += 18
+            score += 10
         if re.search(r"\b(?:ddp|aac|dts|hevc|webdl|bluray|remux|hdr|2160p|1080p)\b", keyword, re.I):
             score -= 18
         if year and year not in keyword:
@@ -565,35 +658,6 @@ def identify_scraper_media(payload: Dict[str, Any]) -> Dict[str, Any]:
         "candidates": [],
         "binding": binding,
     }
-
-
-def _selected_option_enabled(options: Any, key: str) -> bool:
-    if isinstance(options, dict):
-        return bool(options.get(key, False))
-    if isinstance(options, list):
-        return key in {str(item or "").strip() for item in options}
-    return False
-
-
-def extract_scraper_tags(name: str, preserve_options: Any) -> List[str]:
-    tags: List[str] = []
-    text = str(name or "")
-    enabled_groups = {
-        "resolution": _selected_option_enabled(preserve_options, "resolution"),
-        "source": _selected_option_enabled(preserve_options, "source"),
-        "dynamic_range": _selected_option_enabled(preserve_options, "dynamic_range"),
-        "video": _selected_option_enabled(preserve_options, "video"),
-        "audio": _selected_option_enabled(preserve_options, "audio"),
-    }
-    seen: Set[str] = set()
-    for group, patterns in SCRAPER_TAG_PATTERNS.items():
-        if not enabled_groups.get(group):
-            continue
-        for pattern, label in patterns:
-            if re.search(pattern, text, re.I) and label not in seen:
-                seen.add(label)
-                tags.append(label)
-    return tags
 
 
 def sanitize_scraper_name(value: str, fallback: str = "Untitled") -> str:
@@ -708,7 +772,7 @@ def _build_scraper_target_path(entry: Dict[str, Any], tmdb: Dict[str, Any], opti
         str(options.get("base_path", "") or ""),
     )
     _, ext = os.path.splitext(str(entry.get("name", "") or ""))
-    tags = extract_scraper_tags(str(entry.get("name", "") or ""), options.get("preserve_tags", {})) if bool(options.get("preserve_file_info", False)) else []
+    tags = media_tag_labels(str(entry.get("name", "") or ""), options.get("preserve_tags", {})) if bool(options.get("preserve_file_info", False)) else []
     tag_suffix = _build_tag_suffix(tags)
     _, file_title, folder_title = _build_scraper_media_titles(tmdb, options, str(entry.get("name", "") or ""))
     if media_type == "tv":
@@ -779,14 +843,14 @@ def _target_name_exists(provider: str, cookie: str, parent_id: str, target_name:
     return False
 
 
-def _is_scraper_path_related(left_path: str, right_path: str) -> bool:
-    normalized_left = normalize_relative_path(str(left_path or "").strip())
-    normalized_right = normalize_relative_path(str(right_path or "").strip())
-    if not normalized_left or not normalized_right:
+def _is_scraper_folder_rename_affecting_path(folder_path: str, target_path: str) -> bool:
+    normalized_folder = normalize_relative_path(str(folder_path or "").strip())
+    normalized_target = normalize_relative_path(str(target_path or "").strip())
+    if not normalized_folder or not normalized_target:
         return False
-    if normalized_left == normalized_right:
+    if normalized_folder == normalized_target:
         return True
-    return normalized_left.startswith(f"{normalized_right}/") or normalized_right.startswith(f"{normalized_left}/")
+    return normalized_target.startswith(f"{normalized_folder}/")
 
 
 def _collect_scraper_subscription_path_warning(
@@ -814,14 +878,16 @@ def _collect_scraper_subscription_path_warning(
         if not task_savepath:
             continue
         label = str(task.get("title", "") or task.get("name", "") or "").strip() or "未命名任务"
-        matched_path = ""
+        affected_folder_path = ""
         for candidate_path in normalized_paths:
-            if _is_scraper_path_related(candidate_path, task_savepath):
-                matched_path = candidate_path
+            if _is_scraper_folder_rename_affecting_path(candidate_path, task_savepath):
+                affected_folder_path = candidate_path
                 break
-        if not matched_path:
+        if not affected_folder_path:
             continue
-        return f"文件夹【{matched_path}】用于订阅任务【{label}】；更改可能导致保存路径失效或已保存内容重新识别。"
+        if affected_folder_path == task_savepath:
+            return f"文件夹【{affected_folder_path}】是订阅任务【{label}】的保存路径；重命名后可能导致保存路径失效。"
+        return f"文件夹【{affected_folder_path}】是订阅任务【{label}】保存路径【{task_savepath}】的上级目录；重命名后可能导致保存路径失效。"
 
     return ""
 
@@ -831,13 +897,9 @@ def _collect_scraper_subscription_rename_warning(provider: str, old_path: str, n
 
 
 def _collect_scraper_action_warning(provider: str, action: Dict[str, Any]) -> str:
-    if bool(action.get("is_dir")):
-        folder_path = str(action.get("old_path", "") or "").strip()
-    else:
-        folder_path = str(action.get("target_parent_path", "") or "").strip()
-        if not folder_path:
-            new_path = normalize_relative_path(str(action.get("new_path", "") or "").strip())
-            folder_path = os.path.dirname(new_path).replace("\\", "/") if new_path else ""
+    if not bool(action.get("is_dir")):
+        return ""
+    folder_path = str(action.get("old_path", "") or "").strip()
     if not folder_path:
         old_path = normalize_relative_path(str(action.get("old_path", "") or "").strip())
         folder_path = os.path.dirname(old_path).replace("\\", "/") if old_path else ""

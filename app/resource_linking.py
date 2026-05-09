@@ -4,6 +4,8 @@ import urllib.parse
 from html import unescape
 from typing import Any, Dict, List, Tuple
 
+from .media_tags import format_media_tag_summary
+
 
 RESOURCE_MAGNET_REGEX = re.compile(r"magnet:\?xt=urn:btih:[A-Za-z0-9]{32,40}[^\s<>'\"]*", re.IGNORECASE)
 RESOURCE_MAGNET_HASH_REGEX = re.compile(r"xt=urn:btih:([A-Za-z0-9]{32,40})", re.IGNORECASE)
@@ -158,25 +160,7 @@ def contains_cjk_text(value: Any) -> bool:
 
 
 def guess_resource_quality(text: str) -> str:
-    raw = str(text or "").lower()
-    tokens: List[str] = []
-    for pattern, label in [
-        ("2160p", "2160p"),
-        ("4k", "4K"),
-        ("1080p", "1080p"),
-        ("720p", "720p"),
-        ("bluray", "BluRay"),
-        ("web-dl", "WEB-DL"),
-        ("webrip", "WEBRip"),
-        ("remux", "Remux"),
-        ("hdr", "HDR"),
-        ("dv", "DV"),
-        ("x265", "x265"),
-        ("x264", "x264"),
-    ]:
-        if pattern in raw and label not in tokens:
-            tokens.append(label)
-    return " / ".join(tokens[:4])
+    return format_media_tag_summary(text, separator=" / ")
 
 
 def detect_resource_link_type(url: str) -> str:
