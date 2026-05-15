@@ -138,12 +138,99 @@ def build_resource_search_text(item: Dict[str, Any]) -> str:
     return " ".join(str(part or "").strip().lower() for part in parts if str(part or "").strip())
 
 
+def tokenize_resource_search_keyword(keyword: str) -> List[str]:
+    return [token for token in re.split(r"\s+", str(keyword or "").strip().lower()) if token]
+
+
+def _field_matches_tokens(text: str, tokens: List[str]) -> bool:
+    haystack = str(text or "").strip().lower()
+    return bool(tokens) and all(token in haystack for token in tokens)
+
+
+def _first_non_empty_line(text: str) -> str:
+    for line in str(text or "").splitlines():
+        normalized = re.sub(r"\s+", " ", line).strip()
+        if normalized:
+            return normalized
+    return ""
+
+
+def _build_resource_match_snippet(text: str, tokens: List[str], radius: int = 36) -> str:
+    normalized = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not normalized:
+        return ""
+    lowered = normalized.lower()
+    positions = [lowered.find(token) for token in tokens if token and lowered.find(token) >= 0]
+    if not positions:
+        return normalized[: radius * 2].strip()
+    start = max(0, min(positions) - radius)
+    end = min(len(normalized), min(positions) + max(len(token) for token in tokens) + radius)
+    prefix = "..." if start > 0 else ""
+    suffix = "..." if end < len(normalized) else ""
+    return f"{prefix}{normalized[start:end].strip()}{suffix}"
+
+
+def build_resource_search_match_info(item: Dict[str, Any], keyword: str) -> Dict[str, Any]:
+    payload = item if isinstance(item, dict) else {}
+    extra = payload.get("extra") if isinstance(payload.get("extra"), dict) else {}
+    tokens = tokenize_resource_search_keyword(keyword)
+    if not tokens:
+        return {"matched": True, "rank": 0, "field": "", "field_label": "", "snippet": ""}
+
+    title = str(payload.get("title", "") or "").strip()
+    raw_text = str(payload.get("raw_text", "") or "").strip()
+    fields: List[Tuple[int, str, str, str]] = [
+        (0, "title", "标题", title),
+        (1, "normalized_title", "标题", str(payload.get("normalized_title", "") or "").strip()),
+        (2, "raw_first_line", "正文", _first_non_empty_line(raw_text)),
+        (3, "raw_text", "正文", raw_text),
+        (4, "source_name", "来源", str(payload.get("source_name", "") or "").strip()),
+        (4, "channel_name", "频道", str(payload.get("channel_name", "") or "").strip()),
+        (5, "link_url", "链接", str(payload.get("link_url", "") or "").strip()),
+        (5, "message_url", "消息", str(payload.get("message_url", "") or "").strip()),
+        (5, "source_post_id", "消息", str(payload.get("source_post_id", "") or extra.get("source_post_id", "")).strip()),
+    ]
+    seen_values: Set[str] = set()
+    for rank, field, label, value in fields:
+        normalized_value = str(value or "").strip()
+        if not normalized_value:
+            continue
+        normalized_key = normalized_value.lower()
+        if normalized_key in seen_values:
+            continue
+        seen_values.add(normalized_key)
+        if _field_matches_tokens(normalized_value, tokens):
+            return {
+                "matched": True,
+                "rank": rank,
+                "field": field,
+                "field_label": label,
+                "snippet": _build_resource_match_snippet(normalized_value, tokens),
+            }
+    return {"matched": False, "rank": 99, "field": "", "field_label": "", "snippet": ""}
+
+
+def get_resource_search_rank(item: Dict[str, Any], keyword: str) -> int:
+    match_info = item.get("search_match") if isinstance(item, dict) else {}
+    if isinstance(match_info, dict) and match_info.get("matched"):
+        return _parse_int(match_info.get("rank"), default=99)
+    return _parse_int(build_resource_search_match_info(item, keyword).get("rank"), default=99)
+
+
+def sort_resource_search_items(items: List[Dict[str, Any]], keyword: str) -> List[Dict[str, Any]]:
+    result = list(items or [])
+    result.sort(key=get_resource_item_sort_key, reverse=True)
+    result.sort(key=lambda item: get_resource_search_rank(item, keyword))
+    return result
+
+
 def resource_item_matches_search(item: Dict[str, Any], keyword: str) -> bool:
-    tokens = [token for token in re.split(r"\s+", str(keyword or "").strip().lower()) if token]
+    tokens = tokenize_resource_search_keyword(keyword)
     if not tokens:
         return True
-    haystack = build_resource_search_text(item)
-    return all(token in haystack for token in tokens)
+    return bool(build_resource_search_match_info(item, keyword).get("matched")) or all(
+        token in build_resource_search_text(item) for token in tokens
+    )
 
 
 def get_resource_item_sort_key(item: Dict[str, Any]) -> Tuple[str, int, str]:
@@ -180,6 +267,10 @@ __all__ = [
     "build_resource_item_identity_by_mode",
     "dedupe_resource_item_dicts",
     "build_resource_search_text",
+    "tokenize_resource_search_keyword",
+    "build_resource_search_match_info",
+    "get_resource_search_rank",
+    "sort_resource_search_items",
     "resource_item_matches_search",
     "get_resource_item_sort_key",
     "get_resource_item_post_cursor",

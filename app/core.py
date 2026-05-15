@@ -48,7 +48,7 @@ from .http_utils import (
 from .resource_identity import (
     build_resource_item_identity,
     build_resource_item_identity_by_mode,
-    build_resource_search_text,
+    build_resource_search_match_info,
     build_telegram_channel_page_url,
     build_telegram_channel_url,
     dedupe_resource_item_dicts,
@@ -60,6 +60,7 @@ from .resource_identity import (
     parse_resource_datetime_to_timestamp,
     resolve_resource_item_published_at,
     resource_item_matches_search,
+    sort_resource_search_items,
 )
 from .resource_linking import (
     RESOURCE_115_SHARE_BARE_URL_REGEX,
@@ -2775,8 +2776,10 @@ def search_telegram_channel_resource_items(
     normalized_stop_cursor = max(0, int(stop_cursor or 0))
     target_limit = max(1, int(limit_per_channel or TG_SEARCH_MATCH_LIMIT_PER_CHANNEL))
     fetch_limit = max(1, int(page_size or TG_SEARCH_PAGE_LIMIT))
+    page_budget = max(1, int(max_pages or TG_SEARCH_MAX_PAGES))
+    candidate_limit = max(target_limit, min(fetch_limit * page_budget, target_limit * 3))
 
-    for _ in range(max(1, int(max_pages or TG_SEARCH_MAX_PAGES))):
+    for _ in range(page_budget):
         check_resource_search_cancelled(search_id)
         page = fetch_telegram_channel_posts_page(
             cfg,
@@ -2806,7 +2809,8 @@ def search_telegram_channel_resource_items(
                 incremental_stop_hit = True
                 break
             check_resource_search_cancelled(search_id)
-            if not resource_item_matches_search(post, keyword):
+            match_info = build_resource_search_match_info(post, keyword)
+            if not match_info.get("matched"):
                 continue
             if not resource_item_matches_provider_filter(post, provider_filter):
                 continue
@@ -2814,11 +2818,11 @@ def search_telegram_channel_resource_items(
             if identity in seen_keys:
                 continue
             seen_keys.add(identity)
-            page_matches.append(post)
+            page_matches.append({**post, "search_match": match_info})
 
-        remaining = max(0, target_limit - len(items))
-        if page_matches and remaining > 0:
-            items.extend(page_matches[:remaining])
+        remaining_candidates = max(0, candidate_limit - len(items))
+        if page_matches and remaining_candidates > 0:
+            items.extend(page_matches[:remaining_candidates])
 
         if incremental_stop_hit:
             next_before = ""
@@ -2826,23 +2830,33 @@ def search_telegram_channel_resource_items(
             break
 
         page_before = str(page.get("next_before", "") or "").strip()
-        more_in_current_page = len(page_matches) > remaining if remaining > 0 else bool(page_matches)
+        more_in_current_page = len(page_matches) > remaining_candidates if remaining_candidates > 0 else bool(page_matches)
         has_more = bool((more_in_current_page or page.get("has_more")) and (page_before or items))
         if items and has_more:
             next_before = get_resource_item_post_cursor(items[-1]) or page_before
         elif not has_more:
             next_before = ""
 
-        if len(items) >= target_limit:
+        best_rank = min(
+            (
+                parse_int(item.get("search_match", {}).get("rank", 99), default=99)
+                for item in items
+                if isinstance(item.get("search_match"), dict)
+            ),
+            default=99,
+        )
+        if len(items) >= target_limit and best_rank <= 1:
+            break
+        if len(items) >= candidate_limit:
             break
         before = page_before
         if not before or not page.get("has_more"):
             break
 
-    items.sort(key=get_resource_item_sort_key, reverse=True)
+    items = sort_resource_search_items(items, keyword)
     return {
         "channel_id": channel_id,
-        "items": items,
+        "items": items[:target_limit],
         "pages_scanned": pages_scanned,
         "next_before": next_before,
         "has_more": bool(next_before and has_more),
@@ -3040,7 +3054,7 @@ async def search_resource_sources(
             )
 
     deduped_items = dedupe_resource_item_dicts(items, identity_mode=normalized_identity_mode)
-    deduped_items.sort(key=get_resource_item_sort_key, reverse=True)
+    deduped_items = sort_resource_search_items(deduped_items, query)
     returned_items = deduped_items
     if global_total_limit > 0:
         returned_items = deduped_items[: max(1, global_total_limit)]

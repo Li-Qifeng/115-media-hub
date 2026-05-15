@@ -9270,6 +9270,12 @@
             -webkit-line-clamp: 2;
         }
 
+        .resource-card-match-label {
+            color: #7dd3fc;
+            font-weight: 800;
+            margin-right: 0.35rem;
+        }
+
         .resource-card-actions {
             grid-area: actions;
             display: flex;
@@ -9835,6 +9841,10 @@
 
         html.theme-day .resource-card-desc {
             color: #3e5167;
+        }
+
+        html.theme-day .resource-card-match-label {
+            color: #0369a1;
         }
 
         html.theme-day .resource-card-type-badge-115share {

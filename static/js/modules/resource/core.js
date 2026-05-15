@@ -1468,7 +1468,18 @@
             return escapeHtml(tokens.join(' / ') || '暂无附加信息');
         }
 
+        function buildResourceSearchMatchSnippet(item) {
+            const keyword = String(resourceState.search || '').trim();
+            const match = item?.search_match && typeof item.search_match === 'object' ? item.search_match : {};
+            const snippet = String(match?.snippet || '').trim();
+            if (!keyword || !snippet) return '';
+            const label = String(match?.field_label || '匹配').trim() || '匹配';
+            return `<span class="resource-card-match-label">${escapeHtml(label)}命中：</span>${escapeHtml(snippet)}`;
+        }
+
         function buildResourceDescription(item) {
+            const matchSnippet = buildResourceSearchMatchSnippet(item);
+            if (matchSnippet) return matchSnippet;
             const raw = String(item?.raw_text || item?.title || '').replace(/\s+/g, ' ').trim();
             return escapeHtml(raw || '暂无描述信息');
         }

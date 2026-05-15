@@ -686,6 +686,22 @@ async def load_more_resource_channel_items_endpoint(request: Request) -> Dict[st
         "items": [],
     }
     response_items = import_result.get("items", []) if isinstance(import_result, dict) else []
+    if query and response_items:
+        match_by_identity = {
+            build_resource_item_identity(item): item.get("search_match")
+            for item in items
+            if isinstance(item, dict) and isinstance(item.get("search_match"), dict)
+        }
+        response_items = [
+            {
+                **item,
+                "search_match": match_by_identity.get(build_resource_item_identity(item), {}),
+            }
+            if match_by_identity.get(build_resource_item_identity(item))
+            else item
+            for item in response_items
+            if isinstance(item, dict)
+        ]
     return {
         "ok": True,
         "channel_id": channel_id,
