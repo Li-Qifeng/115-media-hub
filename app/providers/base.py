@@ -63,17 +63,15 @@ class CloudProvider(ABC):
     def submit_share_receive(self, cookie: str, receive_payload: Dict[str, Any], files: List[Dict[str, Any]]) -> Dict[str, Any]:
         raise NotImplementedError
 
-    @abstractmethod
     def submit_offline_task(self, cookie: str, resource_url: str, folder_id: str = "0") -> Dict[str, Any]:
-        raise NotImplementedError
+        raise NotImplementedError(f"{self.label} 不支持离线下载")
 
     @abstractmethod
     def probe_connectivity(self, cookie: str) -> bool:
         raise NotImplementedError
 
-    @abstractmethod
     def resolve_download_url(self, cookie: str, file_id: str) -> str:
-        raise NotImplementedError
+        raise NotImplementedError(f"{self.label} 不支持 STRM 直链")
 
     # === 限流工具 ===
     def throttle(self) -> None:
