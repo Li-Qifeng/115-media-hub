@@ -35,3 +35,4 @@ preview-runtime/
 AGENTS.md
 CLAUDE.md
 doc/
+.worktrees/
