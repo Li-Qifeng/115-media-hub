@@ -6075,6 +6075,8 @@ async def sleep_interruptible(seconds: float) -> None:
         await asyncio.sleep(min(0.5, end_at - time.time()))
 
 
+from .providers.registry import get_all_capabilities, get_by_link_type, get_or_none as _get_provider_or_none, list_all, list_enabled
+
 from .providers.common import parse_int
 from .share_selection import (
     merge_share_selection_meta,
