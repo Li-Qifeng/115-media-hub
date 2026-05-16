@@ -3,7 +3,9 @@ import logging
 
 import requests
 
+from .base import CloudProvider
 from .common import parse_int
+from .registry import register
 from ..share_selection import normalize_share_selection_entry, normalize_share_selection_meta
 from ..core import *  # noqa: F401,F403
 
@@ -1789,3 +1791,58 @@ def submit_quark_share_save(
         }
     except Exception:
         raise
+
+
+class QuarkProvider(CloudProvider):
+    name = "quark"
+    label = "夸克网盘"
+    link_type = "quark"
+    auth_type = "cookie"
+    config_keys = ["cookie_quark"]
+    supports_offline = False
+    supports_fixed_share_link = False
+    supports_strm = True
+    supports_monitor = False
+
+    def list_entries_payload(self, cookie, cid="0", folders_only=False):
+        return list_quark_entries_payload(cookie, cid, folders_only)
+
+    def list_entries(self, cookie, cid="0"):
+        return list_quark_entries(cookie, cid)
+
+    def create_folder(self, cookie, cid="0", folder_name=""):
+        return create_quark_folder(cookie, cid, folder_name)
+
+    def resolve_folder_id_by_path(self, cookie, relative_path):
+        return resolve_quark_folder_id_by_path(cookie, relative_path)
+
+    def ensure_folder_id_by_path(self, cookie, relative_path):
+        return ensure_quark_folder_id_by_path(cookie, relative_path)
+
+    def resolve_share_payload(self, cookie, share_url, raw_text="", receive_code=""):
+        return resolve_quark_share_payload(cookie, share_url, raw_text, receive_code)
+
+    def list_share_entries(self, cookie, share_payload, cid="0", offset=0, limit=200):
+        return list_quark_share_entries(cookie, share_payload, cid, offset, limit)
+
+    def prepare_share_receive(self, cookie, share_payload, cid="0"):
+        return prepare_quark_share_save(cookie, share_payload, cid)
+
+    def submit_share_receive(self, cookie, receive_payload, files):
+        return submit_quark_share_save(cookie, receive_payload, files)
+
+    def probe_connectivity(self, cookie):
+        try:
+            result = probe_quark_connectivity(cookie)
+            return bool(result.get("ok"))
+        except Exception:
+            return False
+
+    def submit_offline_task(self, cookie, resource_url, folder_id="0"):
+        raise NotImplementedError("Quark does not support offline download")
+
+    def resolve_download_url(self, cookie, file_id):
+        raise NotImplementedError("Quark does not support direct download URL resolution")
+
+
+register(QuarkProvider())
