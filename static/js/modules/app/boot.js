@@ -99,6 +99,17 @@
         async function init() {
             try {
                 const cfg = await window.MediaHubApi.getJson('/get_settings');
+                // Load provider capabilities for dynamic UI
+                try {
+                    const providerList = await window.MediaHubApi.getJson('/api/providers');
+                    window.providerMeta = providerList || [];
+                    if (typeof setProviderMeta === 'function') {
+                        setProviderMeta(window.providerMeta);
+                    }
+                } catch (e) {
+                    console.warn('Failed to load provider list, using defaults', e);
+                    window.providerMeta = [];
+                }
                 const sensitiveMeta = normalizeSensitiveConfigMeta(cfg.sensitive_configured || {});
                 if (typeof setAppMountPoints === 'function') {
                     setAppMountPoints(cfg.mount_points || []);
