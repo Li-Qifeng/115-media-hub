@@ -1637,8 +1637,11 @@ def normalize_subscription_task(task: Dict[str, Any]) -> Dict[str, Any]:
         or ""
     ).strip()
     share_link_type = resolve_resource_link_type("", share_link_url)
-    use_115_fixed_link = provider == "115" and share_link_type == "115share"
-    if provider != "115":
+    # Check capability instead of hardcoding provider name
+    _p = _get_provider_or_none(provider)
+    _supports_fixed = _p.supports_fixed_share_link if _p else False
+    use_115_fixed_link = _supports_fixed and share_link_type == "115share"
+    if not _supports_fixed:
         share_link_url = ""
     share_link_receive_code = normalize_receive_code(
         task.get(
@@ -1665,7 +1668,7 @@ def normalize_subscription_task(task: Dict[str, Any]) -> Dict[str, Any]:
         ),
         default=False,
     )
-    if provider != "115":
+    if not _supports_fixed:
         share_link_receive_code = ""
         share_subdir = ""
         share_subdir_cid = ""
