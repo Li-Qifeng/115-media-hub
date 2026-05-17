@@ -1045,10 +1045,11 @@
 
         function normalizeCookieHealthState(raw) {
             const source = raw && typeof raw === 'object' ? raw : {};
-            return {
-                '115': normalizeCookieHealthEntry(source['115'], '115'),
-                quark: normalizeCookieHealthEntry(source.quark, 'quark'),
-            };
+            const result = {};
+            Object.keys(source).forEach((key) => {
+                result[key] = normalizeCookieHealthEntry(source[key], key);
+            });
+            return result;
         }
 
         function getCookieHealthTone(entry) {
