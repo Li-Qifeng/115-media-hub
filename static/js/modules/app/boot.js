@@ -124,6 +124,9 @@
                 if (typeof renderProviderAuthBlocks === 'function') {
                     renderProviderAuthBlocks(cfg, sensitiveMeta);
                 }
+                if (typeof renderMagnetProviderSetting === 'function') {
+                    renderMagnetProviderSetting(cfg);
+                }
                 if (typeof renderCookieHealthBar === 'function') {
                     renderCookieHealthBar(cfg.cookie_health || {});
                 }
@@ -168,6 +171,7 @@
                 });
                 const resourceStateUpdates = {
                     ...resourceState,
+                    config: cfg,
                     sources: cfg.resource_sources || [],
                     quick_links: cfg.resource_quick_links || [],
                     favorite_dirs: cfg.resource_favorite_dirs || dynamicFavDirs,
