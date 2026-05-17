@@ -41,7 +41,10 @@ class Pan123Provider(CloudProvider):
         resp.raise_for_status()
         if resp.status_code == 204 or not resp.text.strip():
             return {}
-        data = resp.json()
+        try:
+            data = resp.json()
+        except (ValueError, Exception):
+            raise RuntimeError("123云盘返回数据异常")
         code = int(data.get("code", -1) or -1)
         if code != 0 and code != 200:
             raise RuntimeError(f"123云盘 API 错误: {data.get('message', '未知错误')}")
@@ -68,7 +71,16 @@ class Pan123Provider(CloudProvider):
                 "size": int(item.get("size", 0) or 0),
                 "parent_id": cid or "0",
             })
-        return {"entries": entries, "total": len(entries)}
+        folder_count = sum(1 for e in entries if e.get("is_dir"))
+        file_count = sum(1 for e in entries if not e.get("is_dir"))
+        return {
+            "entries": entries,
+            "total": len(entries),
+            "summary": {
+                "folder_count": folder_count,
+                "file_count": file_count,
+            },
+        }
 
     def list_entries(self, cookie, cid="0"):
         return self.list_entries_payload(cookie, cid)["entries"]
@@ -137,7 +149,17 @@ class Pan123Provider(CloudProvider):
                 "parent_id": cid or "0",
                 "share_id": share_code,
             })
-        return {"entries": entries, "total": len(entries), "share": share_payload}
+        folder_count = sum(1 for e in entries if e.get("is_dir"))
+        file_count = sum(1 for e in entries if not e.get("is_dir"))
+        return {
+            "entries": entries,
+            "total": len(entries),
+            "summary": {
+                "folder_count": folder_count,
+                "file_count": file_count,
+            },
+            "share_title": share_payload,
+        }
 
     def prepare_share_receive(self, cookie, share_payload, cid="0"):
         return {**share_payload, "target_cid": cid or "0"}
