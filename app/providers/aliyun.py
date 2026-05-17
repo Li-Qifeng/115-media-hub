@@ -481,12 +481,23 @@ class AliyunProvider(CloudProvider):
 
     def delete_entries(self, cookie, entry_ids, parent_id=""):
         drive_id = self._resolve_drive_id(cookie)
+        headers = self._api_headers(cookie)
         for eid in entry_ids:
             body = {
                 "drive_id": drive_id,
                 "file_id": str(eid).strip(),
             }
-            self._api_post(cookie, f"{ALIYUN_API_BASE}/v3/file/delete", body)
+            self.throttle()
+            resp = requests.post(
+                f"{ALIYUN_API_BASE}/v3/file/delete",
+                headers=headers,
+                json=body,
+                timeout=30,
+            )
+            resp.raise_for_status()
+            # 阿里云盘 /v3/file/delete 返回 204 No Content 或空 body
+            if resp.status_code != 204 and resp.text.strip():
+                self._raise_for_api_error(resp.json())
         return {"ok": True, "ids": entry_ids}
 
 
