@@ -3941,6 +3941,48 @@
             renderMonitorTasks();
         }
 
+        function buildMonitorTaskActionIcon(icon) {
+            const icons = {
+                run: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M8 5.75V18.25L17.5 12L8 5.75Z" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></svg>',
+                stop: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7.25 7.25H16.75V16.75H7.25V7.25Z" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"/></svg>',
+                queued: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 19.25A7.25 7.25 0 1 0 12 4.75A7.25 7.25 0 0 0 12 19.25Z" stroke="currentColor" stroke-width="1.8"/><path d="M12 8.25V12.25L14.75 14.25" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+                edit: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5.25 18.75L9.1 17.9L18.45 8.55A2.05 2.05 0 0 0 15.55 5.65L6.2 15L5.25 18.75Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14.35 6.85L17.15 9.65" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+                delete: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 7.5H19" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M9.25 7.5V5.75H14.75V7.5" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M8 10V18.25H16V10" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M10.5 11.5V16.5M13.5 11.5V16.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
+                collapse: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 14L12 9L17 14" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+                expand: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 10L12 15L17 10" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+            };
+            return icons[icon] || icons.edit;
+        }
+
+        function buildMonitorTaskIconButton({
+            action,
+            taskName,
+            label,
+            icon,
+            tone = 'neutral',
+            disabled = false,
+            extraAttrs = '',
+        } = {}) {
+            const normalizedAction = String(action || '').trim();
+            const normalizedLabel = String(label || '').trim();
+            if (!normalizedAction || !normalizedLabel) return '';
+            const attrText = String(extraAttrs || '').trim();
+            const disabledAttrs = disabled ? ' disabled aria-disabled="true"' : '';
+            return `
+                <button
+                    type="button"
+                    data-monitor-action="${escapeHtml(normalizedAction)}"
+                    data-task-name="${encodeURIComponent(taskName)}"
+                    class="monitor-task-icon-btn monitor-task-icon-btn-${escapeHtml(tone)} ${disabled ? 'btn-disabled' : ''}"
+                    title="${escapeHtml(normalizedLabel)}"
+                    aria-label="${escapeHtml(normalizedLabel)}"
+                    ${attrText ? `${attrText} ` : ''}${disabledAttrs}
+                >
+                    ${buildMonitorTaskActionIcon(icon)}
+                </button>
+            `;
+        }
+
         function renderMonitorTasks() {
             const container = document.getElementById('monitor-task-list');
             const tasks = monitorState.tasks || [];
@@ -3957,12 +3999,42 @@
                 const starting = isMonitorActionLocked('start', taskName);
                 const stopping = isMonitorActionLocked('stop', taskName);
                 const deleting = isMonitorActionLocked('delete', taskName);
-                const startDisabled = monitorState.running || starting || stopping || deleting;
-                const stopDisabled = !running || starting || stopping || deleting;
+                const otherTaskRunning = monitorState.running && !running;
+                const toggleRunAction = running ? 'stop' : 'start';
+                const toggleRunLabel = running
+                    ? (stopping ? '中断中' : '中断')
+                    : (queued ? '排队中' : (starting ? '启动中' : '运行'));
+                const toggleRunDisabled = queued || otherTaskRunning || starting || stopping || deleting;
+                const toggleRunTone = running ? 'stop' : (queued ? 'queued' : 'run');
+                const toggleRunIcon = running ? 'stop' : (queued ? 'queued' : 'run');
                 const deleteDisabled = running || starting || stopping || deleting;
                 const nextRun = (monitorState.next_runs || {})[taskName];
                 const introExpanded = isTaskIntroExpanded(monitorTaskIntroExpanded, taskName);
                 const introText = buildMonitorTaskIntro(task, { running, queued, nextRun });
+                const toggleRunButton = buildMonitorTaskIconButton({
+                    action: 'toggle-run',
+                    taskName,
+                    label: toggleRunLabel,
+                    icon: toggleRunIcon,
+                    tone: toggleRunTone,
+                    disabled: toggleRunDisabled,
+                    extraAttrs: `data-monitor-run-action="${escapeHtml(toggleRunAction)}"`,
+                });
+                const editButton = buildMonitorTaskIconButton({
+                    action: 'edit',
+                    taskName,
+                    label: '编辑',
+                    icon: 'edit',
+                    tone: 'edit',
+                });
+                const deleteButton = buildMonitorTaskIconButton({
+                    action: 'delete',
+                    taskName,
+                    label: deleting ? '删除中' : '删除',
+                    icon: 'delete',
+                    tone: 'delete',
+                    disabled: deleteDisabled,
+                });
                 return `
                     <div class="rounded-2xl border border-slate-700 bg-slate-900/60 p-3 sm:p-4">
                         <div class="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-3">
@@ -3979,14 +4051,15 @@
                                     type="button"
                                     data-monitor-toggle-intro="${taskKey}"
                                     aria-expanded="${introExpanded ? 'true' : 'false'}"
-                                    class="shrink-0 text-[11px] sm:text-xs font-bold text-sky-300 hover:text-sky-200 hover:underline underline-offset-2 rounded-lg px-1.5 py-1 focus:outline-none focus:ring-2 focus:ring-sky-500/45"
-                                >${introExpanded ? '收起简介' : '展开简介'}</button>
+                                    class="monitor-intro-toggle-btn"
+                                    title="${introExpanded ? '收起简介' : '展开简介'}"
+                                    aria-label="${introExpanded ? '收起简介' : '展开简介'}"
+                                >${buildMonitorTaskActionIcon(introExpanded ? 'collapse' : 'expand')}</button>
                             </div>
-                            <div class="monitor-task-actions grid grid-cols-4 gap-2 shrink-0 w-full lg:w-auto">
-                                <button type="button" data-monitor-action="start" data-task-name="${taskKey}" class="px-2 sm:px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-bold ${startDisabled ? 'btn-disabled' : ''}" ${startDisabled ? 'disabled' : ''}>${starting ? '启动中...' : '运行'}</button>
-                                <button type="button" data-monitor-action="stop" data-task-name="${taskKey}" class="px-2 sm:px-3 py-2 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 text-sm font-bold ${stopDisabled ? 'btn-disabled' : ''}" ${stopDisabled ? 'disabled' : ''}>${stopping ? '中断中...' : '中断'}</button>
-                                <button type="button" data-monitor-action="edit" data-task-name="${taskKey}" class="px-2 sm:px-3 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 text-white text-sm font-bold">编辑</button>
-                                <button type="button" data-monitor-action="delete" data-task-name="${taskKey}" class="px-2 sm:px-3 py-2 rounded-xl bg-red-500/15 hover:bg-red-500/25 text-red-300 text-sm font-bold ${deleteDisabled ? 'btn-disabled' : ''}" ${deleteDisabled ? 'disabled' : ''}>${deleting ? '删除中...' : '删除'}</button>
+                            <div class="monitor-task-actions monitor-task-actionbar" aria-label="文件夹监控任务操作">
+                                ${toggleRunButton}
+                                ${editButton}
+                                ${deleteButton}
                             </div>
                         </div>
                         ${introExpanded ? `<div class="mt-3 text-xs text-slate-300 leading-6 rounded-xl border border-slate-700/90 bg-slate-950/45 px-3 py-2">${escapeHtml(introText)}</div>` : ''}

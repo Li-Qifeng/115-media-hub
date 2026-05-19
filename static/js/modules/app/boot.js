@@ -587,6 +587,11 @@
             const action = btn.dataset.monitorAction || '';
             const name = decodeURIComponent(btn.dataset.taskName || '');
             if (!name) return;
+            if (action === 'toggle-run') {
+                if (btn.dataset.monitorRunAction === 'stop') await stopMonitorTask(name);
+                else await startMonitorTask(name);
+                return;
+            }
             if (action === 'start') await startMonitorTask(name);
             if (action === 'stop') await stopMonitorTask(name);
             if (action === 'edit') editMonitorTask(name);
