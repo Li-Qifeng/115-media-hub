@@ -10023,6 +10023,7 @@
             border: 1px solid rgba(153, 178, 212, 0.14);
             background: rgba(8, 17, 29, 0.66);
             min-width: 0;
+            flex-shrink: 0;
         }
 
         .resource-search-segment-btn {
