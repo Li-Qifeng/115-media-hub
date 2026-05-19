@@ -1,5 +1,6 @@
 from ..background import submit_background
 from ..core import *  # noqa: F401,F403
+from ..db import db_connection
 from ..memory import release_process_memory
 from ..providers.registry import get_or_none as get_provider_or_none
 from .monitor import queue_monitor_job
@@ -13,10 +14,9 @@ def _mark_resource_job_failed(job_id: int, resource_id: int, detail: str) -> Non
     fail_detail = str(detail or "资源导入失败").strip() or "资源导入失败"
     update_resource_job(job_id, status="failed", status_detail=fail_detail, finished_at=now_text())
     if resource_id > 0:
-        conn = open_db()
-        update_resource_item_status(conn, resource_id, "failed")
-        conn.commit()
-        conn.close()
+        with db_connection() as conn:
+            update_resource_item_status(conn, resource_id, "failed")
+            conn.commit()
 
 
 def _build_retry_resource_from_job(job: Dict[str, Any]) -> Dict[str, Any]:
@@ -117,10 +117,11 @@ async def cancel_resource_job(job_id: int, reason: str = "manual") -> Dict[str, 
     if status == "completed":
         raise RuntimeError("任务已完成，无需取消")
 
-    resource_job_cancel_requested.add(job_id)
-    resource_refresh_pending.discard(job_id)
-    resource_id = max(0, int(job.get("resource_id", 0) or 0))
-    running_now = job_id in resource_job_running
+    with resource_job_lock:
+        resource_job_cancel_requested.add(job_id)
+        resource_refresh_pending.discard(job_id)
+        resource_id = max(0, int(job.get("resource_id", 0) or 0))
+        running_now = job_id in resource_job_running
     if status == "failed":
         return {"ok": True, "status": "already_failed", "running": running_now}
 
@@ -139,7 +140,7 @@ async def retry_resource_job(job_id: int, reason: str = "manual") -> Dict[str, A
         raise RuntimeError("资源任务不存在")
     status = str(job.get("status", "") or "").strip().lower()
     if status in ("pending", "running", "submitted"):
-        if job_id in resource_job_running:
+        if job_id in resource_job_running:  # GIL protects single set membership check
             raise RuntimeError("任务仍在执行，请先取消后再重试")
         await cancel_resource_job(job_id, reason="retry")
 
@@ -224,17 +225,17 @@ async def trigger_resource_job_refresh(job_id: int, reason: str = "manual") -> D
     )
     resource_id = int(job.get("resource_id", 0) or 0)
     if resource_id > 0:
-        conn = open_db()
-        update_resource_item_status(conn, resource_id, "completed")
-        conn.commit()
-        conn.close()
+        with db_connection() as conn:
+            update_resource_item_status(conn, resource_id, "completed")
+            conn.commit()
     return {"ok": True, "status": status}
 
 
 async def schedule_resource_job_refresh(job_id: int) -> None:
-    if job_id in resource_refresh_pending:
-        return
-    resource_refresh_pending.add(job_id)
+    with resource_job_lock:
+        if job_id in resource_refresh_pending:
+            return
+        resource_refresh_pending.add(job_id)
     try:
         job = get_resource_job(job_id, include_private=True)
         if not job or not job.get("auto_refresh"):
@@ -250,13 +251,15 @@ async def schedule_resource_job_refresh(job_id: int) -> None:
         except Exception as exc:
             update_resource_job(job_id, status="failed", status_detail=str(exc), finished_at=now_text())
     finally:
-        resource_refresh_pending.discard(job_id)
+        with resource_job_lock:
+            resource_refresh_pending.discard(job_id)
 
 
 async def run_resource_job(job_id: int) -> None:
-    if job_id in resource_job_running:
-        return
-    resource_job_running.add(job_id)
+    with resource_job_lock:
+        if job_id in resource_job_running:
+            return
+        resource_job_running.add(job_id)
     try:
         job = get_resource_job(job_id, include_private=True)
         if not job:
@@ -356,10 +359,9 @@ async def run_resource_job(job_id: int) -> None:
             started_at=now_text(),
         )
         if resource_id > 0:
-            conn = open_db()
-            update_resource_item_status(conn, resource_id, "importing")
-            conn.commit()
-            conn.close()
+            with db_connection() as conn:
+                update_resource_item_status(conn, resource_id, "importing")
+                conn.commit()
         ensure_not_cancelled("提交前")
 
         if link_type == "magnet":
@@ -461,10 +463,9 @@ async def run_resource_job(job_id: int) -> None:
         ensure_not_cancelled("状态写回前")
         update_resource_job(job_id, **update_fields)
         if resource_id > 0:
-            conn = open_db()
-            update_resource_item_status(conn, resource_id, next_status)
-            conn.commit()
-            conn.close()
+            with db_connection() as conn:
+                update_resource_item_status(conn, resource_id, next_status)
+                conn.commit()
 
         if (
             (not is_share_receive_link or bool(getattr(share_provider, "supports_monitor", False)))
@@ -479,6 +480,7 @@ async def run_resource_job(job_id: int) -> None:
         failed_resource_id = int((failed_job or {}).get("resource_id", 0) or 0)
         _mark_resource_job_failed(job_id, failed_resource_id, str(exc))
     finally:
-        resource_job_running.discard(job_id)
-        resource_job_cancel_requested.discard(job_id)
+        with resource_job_lock:
+            resource_job_running.discard(job_id)
+            resource_job_cancel_requested.discard(job_id)
         release_process_memory(f"resource-job:{job_id}")

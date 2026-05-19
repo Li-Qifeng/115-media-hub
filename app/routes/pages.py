@@ -2,7 +2,7 @@ import os
 import re
 import threading
 import time
-from typing import Dict, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -10,6 +10,11 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from ..core import *  # noqa: F401,F403
 
 router = APIRouter()
+
+_LOGIN_MAX_ATTEMPTS = 5
+_LOGIN_LOCKOUT_SECONDS = 300
+_login_attempts: Dict[str, List[float]] = {}
+_login_attempts_lock = threading.Lock()
 _TEMPLATE_INCLUDE_RE = re.compile(r"{%\s*include\s+[\"']([^\"']+)[\"']\s*%}")
 _ASSET_VERSION_CACHE_SECONDS = max(1, int(os.environ.get("ASSET_VERSION_CACHE_SECONDS", 30) or 30))
 _TEMPLATE_CACHE_SECONDS = max(0, int(os.environ.get("TEMPLATE_CACHE_SECONDS", 30) or 30))
@@ -87,11 +92,27 @@ async def login_page(request: Request) -> str:
 
 @router.post("/login")
 async def do_login(request: Request) -> JSONResponse:
+    client_ip = request.client.host if request.client else "unknown"
+    now = time.time()
+
+    with _login_attempts_lock:
+        attempts = _login_attempts.get(client_ip, [])
+        attempts = [t for t in attempts if now - t < _LOGIN_LOCKOUT_SECONDS]
+        if len(attempts) >= _LOGIN_MAX_ATTEMPTS:
+            return JSONResponse(status_code=429, content={"ok": False, "msg": "登录失败次数过多，请5分钟后重试"})
+
     data = await request.json()
     cfg = get_config()
-    if data.get("username") == cfg.get("username") and data.get("password") == cfg.get("password"):
+    username_ok = hmac.compare_digest(str(data.get("username", "")), str(cfg.get("username", "")))
+    password_ok = verify_password(str(data.get("password", "")), str(cfg.get("password", "")))
+    if username_ok and password_ok:
+        with _login_attempts_lock:
+            _login_attempts.pop(client_ip, None)
         request.session["logged_in"] = True
         return JSONResponse(content={"ok": True})
+
+    with _login_attempts_lock:
+        _login_attempts.setdefault(client_ip, []).append(now)
     return JSONResponse(status_code=401, content={"ok": False, "msg": "密码错误"})
 
 
@@ -130,7 +151,13 @@ async def install_magnet_userscript(request: Request):
     )
 
 
+@router.post("/logout")
+async def logout(request: Request) -> JSONResponse:
+    request.session.clear()
+    return JSONResponse(content={"ok": True, "redirect": "/login"})
+
+
 @router.get("/logout")
-async def logout(request: Request) -> RedirectResponse:
+async def logout_compat(request: Request) -> RedirectResponse:
     request.session.clear()
     return RedirectResponse("/login")

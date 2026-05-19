@@ -1,4 +1,6 @@
-from .core import app
+from fastapi import Depends
+
+from .core import app, require_auth
 from .routes.events import router as events_router
 from .routes.monitor import router as monitor_router
 from .routes.pages import router as pages_router
@@ -10,16 +12,18 @@ from .routes.subscription import router as subscription_router
 from .routes.tmdb import router as tmdb_router
 from .routes.tree import router as tree_router
 
+_auth_deps = [Depends(require_auth)]
+
 app.include_router(pages_router)
-app.include_router(settings_router)
-app.include_router(tree_router)
-app.include_router(resource_router)
-app.include_router(scraper_router)
+app.include_router(settings_router, dependencies=_auth_deps)
+app.include_router(tree_router, dependencies=_auth_deps)
+app.include_router(resource_router, dependencies=_auth_deps)
+app.include_router(scraper_router, dependencies=_auth_deps)
 app.include_router(strm_router)
-app.include_router(subscription_router)
-app.include_router(tmdb_router)
-app.include_router(events_router)
-app.include_router(monitor_router)
+app.include_router(subscription_router, dependencies=_auth_deps)
+app.include_router(tmdb_router, dependencies=_auth_deps)
+app.include_router(events_router, dependencies=_auth_deps)
+app.include_router(monitor_router, dependencies=_auth_deps)
 
 from . import startup  # noqa: E402,F401
 

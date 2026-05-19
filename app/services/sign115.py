@@ -331,9 +331,6 @@ async def refresh_sign115_status(force_remote: bool = False, trigger: str = "man
         )
         return {"ok": False, **build_sign115_status_payload(cfg)}
 
-    if sign115_runtime.get("running"):
-        return {"ok": False, "message": "签到任务正在执行中", **build_sign115_status_payload(cfg)}
-
     now_ts = time.time()
     if (
         not force_remote
@@ -342,7 +339,11 @@ async def refresh_sign115_status(force_remote: bool = False, trigger: str = "man
     ):
         return {"ok": True, **build_sign115_status_payload(cfg)}
 
-    sign115_runtime["running"] = True
+    with sign115_lock:
+        if sign115_runtime.get("running"):
+            return {"ok": False, "message": "签到任务正在执行中", **build_sign115_status_payload(cfg)}
+        sign115_runtime["running"] = True
+
     set_sign115_status(state="checking", message="正在读取签到状态...", last_trigger=trigger)
     try:
         info = await asyncio.to_thread(_request_sign_info, cookie)
@@ -427,10 +428,11 @@ async def run_sign115_job(trigger: str = "manual") -> Dict[str, Any]:
             last_trigger=trigger,
         )
         return {"ok": False, **build_sign115_status_payload(cfg)}
-    if sign115_runtime.get("running"):
-        return {"ok": False, "message": "签到任务正在执行中", **build_sign115_status_payload(cfg)}
+    with sign115_lock:
+        if sign115_runtime.get("running"):
+            return {"ok": False, "message": "签到任务正在执行中", **build_sign115_status_payload(cfg)}
+        sign115_runtime["running"] = True
 
-    sign115_runtime["running"] = True
     set_sign115_status(state="checking", message="正在执行签到...", last_trigger=trigger)
     try:
         info = await asyncio.to_thread(_request_sign_info, cookie)

@@ -1,15 +1,14 @@
 from ..core import *  # noqa: F401,F403
+from ..db import db_connection
 
 def has_subscription_match(task_name: str, resource_id: int) -> bool:
-    ensure_db()
-    conn = open_db()
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT 1 FROM subscription_matches WHERE task_name = ? AND resource_id = ? LIMIT 1",
-        (str(task_name or "").strip(), int(resource_id or 0)),
-    )
-    row = cursor.fetchone()
-    conn.close()
+    with db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT 1 FROM subscription_matches WHERE task_name = ? AND resource_id = ? LIMIT 1",
+            (str(task_name or "").strip(), int(resource_id or 0)),
+        )
+        row = cursor.fetchone()
     return bool(row)
 
 def create_subscription_match(
@@ -22,60 +21,56 @@ def create_subscription_match(
     total_episodes: int = 0,
     score: int = 0,
 ) -> None:
-    ensure_db()
-    conn = open_db()
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        INSERT OR REPLACE INTO subscription_matches(
-            task_name, resource_id, job_id, media_type, season, episode, total_episodes, score, matched_at
+    with db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT OR REPLACE INTO subscription_matches(
+                task_name, resource_id, job_id, media_type, season, episode, total_episodes, score, matched_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(task_name or "").strip(),
+                int(resource_id or 0),
+                int(job_id or 0),
+                str(media_type or "movie").strip().lower() or "movie",
+                max(0, int(season or 0)),
+                max(0, int(episode or 0)),
+                max(0, int(total_episodes or 0)),
+                int(score or 0),
+                now_text(),
+            ),
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            str(task_name or "").strip(),
-            int(resource_id or 0),
-            int(job_id or 0),
-            str(media_type or "movie").strip().lower() or "movie",
-            max(0, int(season or 0)),
-            max(0, int(episode or 0)),
-            max(0, int(total_episodes or 0)),
-            int(score or 0),
-            now_text(),
-        ),
-    )
-    conn.commit()
-    conn.close()
+        conn.commit()
 
 def load_subscription_episode_ledger(task_name: str, include_stale: bool = False) -> Dict[int, Dict[str, Any]]:
     normalized_task_name = str(task_name or "").strip()
     if not normalized_task_name:
         return {}
-    ensure_db()
-    conn = open_db()
-    cursor = conn.cursor()
-    if include_stale:
-        cursor.execute(
-            """
-            SELECT *
-            FROM subscription_episode_ledger
-            WHERE task_name = ?
-            ORDER BY episode ASC
-            """,
-            (normalized_task_name,),
-        )
-    else:
-        cursor.execute(
-            """
-            SELECT *
-            FROM subscription_episode_ledger
-            WHERE task_name = ? AND status = 'active'
-            ORDER BY episode ASC
-            """,
-            (normalized_task_name,),
-        )
-    rows = cursor.fetchall()
-    conn.close()
+    with db_connection() as conn:
+        cursor = conn.cursor()
+        if include_stale:
+            cursor.execute(
+                """
+                SELECT *
+                FROM subscription_episode_ledger
+                WHERE task_name = ?
+                ORDER BY episode ASC
+                """,
+                (normalized_task_name,),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT *
+                FROM subscription_episode_ledger
+                WHERE task_name = ? AND status = 'active'
+                ORDER BY episode ASC
+                """,
+                (normalized_task_name,),
+            )
+        rows = cursor.fetchall()
 
     ledger: Dict[int, Dict[str, Any]] = {}
     for row in rows:
@@ -108,59 +103,56 @@ def reconcile_subscription_episode_ledger(task_name: str, existing_episodes: Set
         return {"activated": 0, "staled": 0}
     normalized_existing = {max(0, int(value or 0)) for value in (existing_episodes or set()) if max(0, int(value or 0)) > 0}
 
-    ensure_db()
-    conn = open_db()
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        SELECT episode, status
-        FROM subscription_episode_ledger
-        WHERE task_name = ?
-        """,
-        (normalized_task_name,),
-    )
-    rows = cursor.fetchall()
-    if not rows:
-        conn.close()
-        return {"activated": 0, "staled": 0}
-
-    now_iso = now_text()
-    activate_rows: List[Tuple[str, str, int]] = []
-    stale_rows: List[Tuple[str, str, int]] = []
-    for row in rows:
-        episode_no = max(0, int(row["episode"] or 0))
-        if episode_no <= 0:
-            continue
-        current_status = str(row["status"] or "active").strip().lower() or "active"
-        target_status = "active" if episode_no in normalized_existing else "stale"
-        if current_status == target_status:
-            continue
-        payload = (target_status, now_iso, normalized_task_name, episode_no)
-        if target_status == "active":
-            activate_rows.append(payload)
-        else:
-            stale_rows.append(payload)
-
-    if activate_rows:
-        cursor.executemany(
+    with db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
             """
-            UPDATE subscription_episode_ledger
-            SET status = ?, updated_at = ?
-            WHERE task_name = ? AND episode = ?
+            SELECT episode, status
+            FROM subscription_episode_ledger
+            WHERE task_name = ?
             """,
-            activate_rows,
+            (normalized_task_name,),
         )
-    if stale_rows:
-        cursor.executemany(
-            """
-            UPDATE subscription_episode_ledger
-            SET status = ?, updated_at = ?
-            WHERE task_name = ? AND episode = ?
-            """,
-            stale_rows,
-        )
-    conn.commit()
-    conn.close()
+        rows = cursor.fetchall()
+        if not rows:
+            return {"activated": 0, "staled": 0}
+
+        now_iso = now_text()
+        activate_rows: List[Tuple[str, str, int]] = []
+        stale_rows: List[Tuple[str, str, int]] = []
+        for row in rows:
+            episode_no = max(0, int(row["episode"] or 0))
+            if episode_no <= 0:
+                continue
+            current_status = str(row["status"] or "active").strip().lower() or "active"
+            target_status = "active" if episode_no in normalized_existing else "stale"
+            if current_status == target_status:
+                continue
+            payload = (target_status, now_iso, normalized_task_name, episode_no)
+            if target_status == "active":
+                activate_rows.append(payload)
+            else:
+                stale_rows.append(payload)
+
+        if activate_rows:
+            cursor.executemany(
+                """
+                UPDATE subscription_episode_ledger
+                SET status = ?, updated_at = ?
+                WHERE task_name = ? AND episode = ?
+                """,
+                activate_rows,
+            )
+        if stale_rows:
+            cursor.executemany(
+                """
+                UPDATE subscription_episode_ledger
+                SET status = ?, updated_at = ?
+                WHERE task_name = ? AND episode = ?
+                """,
+                stale_rows,
+            )
+        conn.commit()
     return {"activated": len(activate_rows), "staled": len(stale_rows)}
 
 def upsert_subscription_episode_ledger(
@@ -196,123 +188,118 @@ def upsert_subscription_episode_ledger(
     normalized_job_id = max(0, int(job_id or 0))
     now_iso = now_text()
 
-    ensure_db()
-    conn = open_db()
-    cursor = conn.cursor()
-    changed = 0
-    for episode_no in normalized_episodes:
-        cursor.execute(
-            """
-            SELECT best_score, best_resolution, first_seen_at, status
-            FROM subscription_episode_ledger
-            WHERE task_name = ? AND episode = ?
-            """,
-            (normalized_task_name, episode_no),
-        )
-        row = cursor.fetchone()
-        if row:
-            existing_score = max(0, int(row["best_score"] or 0))
-            existing_resolution = max(0, int(row["best_resolution"] or 0))
-            existing_first_seen = str(row["first_seen_at"] or "").strip() or now_iso
-            existing_status = str(row["status"] or "active").strip().lower() or "active"
-
-            best_score_value = existing_score
-            best_resolution_value = existing_resolution
-            if normalized_resolution > existing_resolution:
-                best_resolution_value = normalized_resolution
-                best_score_value = max(existing_score, normalized_score)
-            elif normalized_resolution == existing_resolution:
-                best_score_value = max(existing_score, normalized_score)
-            elif existing_resolution <= 0:
-                best_score_value = max(existing_score, normalized_score)
-
-            status_value = "active"
+    with db_connection() as conn:
+        cursor = conn.cursor()
+        changed = 0
+        for episode_no in normalized_episodes:
             cursor.execute(
                 """
-                UPDATE subscription_episode_ledger
-                SET season = ?, media_type = ?, best_score = ?, best_resolution = ?,
-                    source_fp = ?, content_fp = ?, link_type = ?, link_url = ?,
-                    resource_id = ?, job_id = ?, status = ?, first_seen_at = ?, updated_at = ?
+                SELECT best_score, best_resolution, first_seen_at, status
+                FROM subscription_episode_ledger
                 WHERE task_name = ? AND episode = ?
                 """,
-                (
-                    normalized_season,
-                    normalized_media_type,
-                    best_score_value,
-                    best_resolution_value,
-                    normalized_source_fp,
-                    normalized_content_fp,
-                    normalized_link_type,
-                    normalized_link_url,
-                    normalized_resource_id,
-                    normalized_job_id,
-                    status_value,
-                    existing_first_seen,
-                    now_iso,
-                    normalized_task_name,
-                    episode_no,
-                ),
+                (normalized_task_name, episode_no),
             )
-            if cursor.rowcount > 0 and (
-                best_score_value != existing_score
-                or best_resolution_value != existing_resolution
-                or existing_status != "active"
-            ):
-                changed += 1
-        else:
-            cursor.execute(
-                """
-                INSERT INTO subscription_episode_ledger(
-                    task_name, episode, season, media_type, best_score, best_resolution,
-                    source_fp, content_fp, link_type, link_url, resource_id, job_id,
-                    status, first_seen_at, updated_at
+            row = cursor.fetchone()
+            if row:
+                existing_score = max(0, int(row["best_score"] or 0))
+                existing_resolution = max(0, int(row["best_resolution"] or 0))
+                existing_first_seen = str(row["first_seen_at"] or "").strip() or now_iso
+                existing_status = str(row["status"] or "active").strip().lower() or "active"
+
+                best_score_value = existing_score
+                best_resolution_value = existing_resolution
+                if normalized_resolution > existing_resolution:
+                    best_resolution_value = normalized_resolution
+                    best_score_value = max(existing_score, normalized_score)
+                elif normalized_resolution == existing_resolution:
+                    best_score_value = max(existing_score, normalized_score)
+                elif existing_resolution <= 0:
+                    best_score_value = max(existing_score, normalized_score)
+
+                status_value = "active"
+                cursor.execute(
+                    """
+                    UPDATE subscription_episode_ledger
+                    SET season = ?, media_type = ?, best_score = ?, best_resolution = ?,
+                        source_fp = ?, content_fp = ?, link_type = ?, link_url = ?,
+                        resource_id = ?, job_id = ?, status = ?, first_seen_at = ?, updated_at = ?
+                    WHERE task_name = ? AND episode = ?
+                    """,
+                    (
+                        normalized_season,
+                        normalized_media_type,
+                        best_score_value,
+                        best_resolution_value,
+                        normalized_source_fp,
+                        normalized_content_fp,
+                        normalized_link_type,
+                        normalized_link_url,
+                        normalized_resource_id,
+                        normalized_job_id,
+                        status_value,
+                        existing_first_seen,
+                        now_iso,
+                        normalized_task_name,
+                        episode_no,
+                    ),
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
-                """,
-                (
-                    normalized_task_name,
-                    episode_no,
-                    normalized_season,
-                    normalized_media_type,
-                    normalized_score,
-                    normalized_resolution,
-                    normalized_source_fp,
-                    normalized_content_fp,
-                    normalized_link_type,
-                    normalized_link_url,
-                    normalized_resource_id,
-                    normalized_job_id,
-                    now_iso,
-                    now_iso,
-                ),
-            )
-            if cursor.rowcount > 0:
-                changed += 1
-    conn.commit()
-    conn.close()
+                if cursor.rowcount > 0 and (
+                    best_score_value != existing_score
+                    or best_resolution_value != existing_resolution
+                    or existing_status != "active"
+                ):
+                    changed += 1
+            else:
+                cursor.execute(
+                    """
+                    INSERT INTO subscription_episode_ledger(
+                        task_name, episode, season, media_type, best_score, best_resolution,
+                        source_fp, content_fp, link_type, link_url, resource_id, job_id,
+                        status, first_seen_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+                    """,
+                    (
+                        normalized_task_name,
+                        episode_no,
+                        normalized_season,
+                        normalized_media_type,
+                        normalized_score,
+                        normalized_resolution,
+                        normalized_source_fp,
+                        normalized_content_fp,
+                        normalized_link_type,
+                        normalized_link_url,
+                        normalized_resource_id,
+                        normalized_job_id,
+                        now_iso,
+                        now_iso,
+                    ),
+                )
+                if cursor.rowcount > 0:
+                    changed += 1
+        conn.commit()
     return changed
 
 def prune_subscription_state_for_missing_tasks(task_names: List[str]) -> None:
     normalized = {str(name or "").strip() for name in task_names if str(name or "").strip()}
-    ensure_db()
-    conn = open_db()
-    cursor = conn.cursor()
-    if not normalized:
-        cursor.execute("DELETE FROM subscription_task_state")
-        cursor.execute("DELETE FROM subscription_matches")
-        cursor.execute("DELETE FROM subscription_episode_ledger")
-        cursor.execute("DELETE FROM subscription_channel_search_watermarks")
+    with db_connection() as conn:
+        cursor = conn.cursor()
+        if not normalized:
+            cursor.execute("DELETE FROM subscription_task_state")
+            cursor.execute("DELETE FROM subscription_matches")
+            cursor.execute("DELETE FROM subscription_episode_ledger")
+            cursor.execute("DELETE FROM subscription_channel_search_watermarks")
+            conn.commit()
+            return
+        placeholders = ",".join("?" for _ in normalized)
+        params = list(normalized)
+        cursor.execute(f"DELETE FROM subscription_task_state WHERE task_name NOT IN ({placeholders})", params)
+        cursor.execute(f"DELETE FROM subscription_matches WHERE task_name NOT IN ({placeholders})", params)
+        cursor.execute(f"DELETE FROM subscription_episode_ledger WHERE task_name NOT IN ({placeholders})", params)
+        cursor.execute(f"DELETE FROM subscription_channel_search_watermarks WHERE task_name NOT IN ({placeholders})", params)
         conn.commit()
-        conn.close()
-        return
-    placeholders = ",".join("?" for _ in normalized)
-    params = list(normalized)
-    cursor.execute(f"DELETE FROM subscription_task_state WHERE task_name NOT IN ({placeholders})", params)
-    cursor.execute(f"DELETE FROM subscription_matches WHERE task_name NOT IN ({placeholders})", params)
-    cursor.execute(f"DELETE FROM subscription_episode_ledger WHERE task_name NOT IN ({placeholders})", params)
-    cursor.execute(f"DELETE FROM subscription_channel_search_watermarks WHERE task_name NOT IN ({placeholders})", params)
-    conn.commit()
-    conn.close()
 
 def load_subscription_channel_search_watermarks(
     task_name: str,
@@ -327,30 +314,28 @@ def load_subscription_channel_search_watermarks(
     ]
     normalized_channels = [channel_id for channel_id in normalized_channels if channel_id]
 
-    ensure_db()
-    conn = open_db()
-    cursor = conn.cursor()
-    if normalized_channels:
-        placeholders = ",".join("?" for _ in normalized_channels)
-        cursor.execute(
-            f"""
-            SELECT task_name, channel_id, last_post_cursor, last_published_at, last_run_at, updated_at
-            FROM subscription_channel_search_watermarks
-            WHERE task_name = ? AND channel_id IN ({placeholders})
-            """,
-            [normalized_task_name] + normalized_channels,
-        )
-    else:
-        cursor.execute(
-            """
-            SELECT task_name, channel_id, last_post_cursor, last_published_at, last_run_at, updated_at
-            FROM subscription_channel_search_watermarks
-            WHERE task_name = ?
-            """,
-            (normalized_task_name,),
-        )
-    rows = cursor.fetchall()
-    conn.close()
+    with db_connection() as conn:
+        cursor = conn.cursor()
+        if normalized_channels:
+            placeholders = ",".join("?" for _ in normalized_channels)
+            cursor.execute(
+                f"""
+                SELECT task_name, channel_id, last_post_cursor, last_published_at, last_run_at, updated_at
+                FROM subscription_channel_search_watermarks
+                WHERE task_name = ? AND channel_id IN ({placeholders})
+                """,
+                [normalized_task_name] + normalized_channels,
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT task_name, channel_id, last_post_cursor, last_published_at, last_run_at, updated_at
+                FROM subscription_channel_search_watermarks
+                WHERE task_name = ?
+                """,
+                (normalized_task_name,),
+            )
+        rows = cursor.fetchall()
 
     result: Dict[str, Dict[str, Any]] = {}
     for row in rows:
@@ -419,54 +404,52 @@ def upsert_subscription_channel_search_watermarks(
     )
     now_iso = now_text()
 
-    ensure_db()
-    conn = open_db()
-    cursor = conn.cursor()
-    written = 0
-    for channel_id, payload in normalized_payload.items():
-        target_cursor = max(0, int(payload.get("last_post_cursor", 0) or 0))
-        target_published_at = str(payload.get("last_published_at", "") or "").strip()
-        target_run_at = str(payload.get("last_run_at", "") or "").strip() or now_iso
+    with db_connection() as conn:
+        cursor = conn.cursor()
+        written = 0
+        for channel_id, payload in normalized_payload.items():
+            target_cursor = max(0, int(payload.get("last_post_cursor", 0) or 0))
+            target_published_at = str(payload.get("last_published_at", "") or "").strip()
+            target_run_at = str(payload.get("last_run_at", "") or "").strip() or now_iso
 
-        if only_increase:
-            existing = existing_rows.get(channel_id, {})
-            existing_cursor = max(0, int(existing.get("last_post_cursor", 0) or 0))
-            existing_published_at = str(existing.get("last_published_at", "") or "").strip()
-            existing_published_ts = parse_resource_datetime_to_timestamp(existing_published_at)
-            target_published_ts = parse_resource_datetime_to_timestamp(target_published_at)
-            if target_cursor < existing_cursor:
-                continue
-            if target_cursor == existing_cursor:
-                if target_published_ts > 0 and existing_published_ts > 0 and target_published_ts <= existing_published_ts:
+            if only_increase:
+                existing = existing_rows.get(channel_id, {})
+                existing_cursor = max(0, int(existing.get("last_post_cursor", 0) or 0))
+                existing_published_at = str(existing.get("last_published_at", "") or "").strip()
+                existing_published_ts = parse_resource_datetime_to_timestamp(existing_published_at)
+                target_published_ts = parse_resource_datetime_to_timestamp(target_published_at)
+                if target_cursor < existing_cursor:
                     continue
-                if target_published_ts <= 0 and not target_published_at and not target_run_at:
-                    continue
+                if target_cursor == existing_cursor:
+                    if target_published_ts > 0 and existing_published_ts > 0 and target_published_ts <= existing_published_ts:
+                        continue
+                    if target_published_ts <= 0 and not target_published_at and not target_run_at:
+                        continue
 
-        cursor.execute(
-            """
-            INSERT INTO subscription_channel_search_watermarks(
-                task_name, channel_id, last_post_cursor, last_published_at, last_run_at, updated_at
+            cursor.execute(
+                """
+                INSERT INTO subscription_channel_search_watermarks(
+                    task_name, channel_id, last_post_cursor, last_published_at, last_run_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(task_name, channel_id)
+                DO UPDATE SET
+                    last_post_cursor = excluded.last_post_cursor,
+                    last_published_at = excluded.last_published_at,
+                    last_run_at = excluded.last_run_at,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    normalized_task_name,
+                    channel_id,
+                    target_cursor,
+                    target_published_at,
+                    target_run_at,
+                    now_iso,
+                ),
             )
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(task_name, channel_id)
-            DO UPDATE SET
-                last_post_cursor = excluded.last_post_cursor,
-                last_published_at = excluded.last_published_at,
-                last_run_at = excluded.last_run_at,
-                updated_at = excluded.updated_at
-            """,
-            (
-                normalized_task_name,
-                channel_id,
-                target_cursor,
-                target_published_at,
-                target_run_at,
-                now_iso,
-            ),
-        )
-        written += 1
-    conn.commit()
-    conn.close()
+            written += 1
+        conn.commit()
     return written
 
 def load_subscription_channel_support_stats(
@@ -478,36 +461,34 @@ def load_subscription_channel_support_stats(
     ]
     normalized_channels = [channel_id for channel_id in normalized_channels if channel_id]
 
-    ensure_db()
-    conn = open_db()
-    cursor = conn.cursor()
-    if normalized_channels:
-        placeholders = ",".join("?" for _ in normalized_channels)
-        cursor.execute(
-            f"""
-            SELECT
-                channel_id, channel_name, searched_runs, matched_runs, matched_items,
-                error_runs, incremental_stop_hits, pages_scanned, last_task_name,
-                last_provider, last_trigger, last_error, last_searched_at,
-                last_matched_at, updated_at
-            FROM subscription_channel_support_stats
-            WHERE channel_id IN ({placeholders})
-            """,
-            normalized_channels,
-        )
-    else:
-        cursor.execute(
-            """
-            SELECT
-                channel_id, channel_name, searched_runs, matched_runs, matched_items,
-                error_runs, incremental_stop_hits, pages_scanned, last_task_name,
-                last_provider, last_trigger, last_error, last_searched_at,
-                last_matched_at, updated_at
-            FROM subscription_channel_support_stats
-            """
-        )
-    rows = cursor.fetchall()
-    conn.close()
+    with db_connection() as conn:
+        cursor = conn.cursor()
+        if normalized_channels:
+            placeholders = ",".join("?" for _ in normalized_channels)
+            cursor.execute(
+                f"""
+                SELECT
+                    channel_id, channel_name, searched_runs, matched_runs, matched_items,
+                    error_runs, incremental_stop_hits, pages_scanned, last_task_name,
+                    last_provider, last_trigger, last_error, last_searched_at,
+                    last_matched_at, updated_at
+                FROM subscription_channel_support_stats
+                WHERE channel_id IN ({placeholders})
+                """,
+                normalized_channels,
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT
+                    channel_id, channel_name, searched_runs, matched_runs, matched_items,
+                    error_runs, incremental_stop_hits, pages_scanned, last_task_name,
+                    last_provider, last_trigger, last_error, last_searched_at,
+                    last_matched_at, updated_at
+                FROM subscription_channel_support_stats
+                """
+            )
+        rows = cursor.fetchall()
 
     result: Dict[str, Dict[str, Any]] = {}
     for row in rows:
@@ -571,87 +552,83 @@ def upsert_subscription_channel_support_stats(
         return 0
 
     existing_rows = load_subscription_channel_support_stats(list(normalized_payload.keys()))
-    ensure_db()
-    conn = open_db()
-    cursor = conn.cursor()
-    written = 0
-    for channel_id, payload in normalized_payload.items():
-        existing = existing_rows.get(channel_id, {})
-        searched_runs = max(0, int(existing.get("searched_runs", 0) or 0)) + max(0, int(payload.get("searched_runs", 0) or 0))
-        matched_runs = max(0, int(existing.get("matched_runs", 0) or 0)) + max(0, int(payload.get("matched_runs", 0) or 0))
-        matched_items = max(0, int(existing.get("matched_items", 0) or 0)) + max(0, int(payload.get("matched_items", 0) or 0))
-        error_runs = max(0, int(existing.get("error_runs", 0) or 0)) + max(0, int(payload.get("error_runs", 0) or 0))
-        incremental_stop_hits = max(0, int(existing.get("incremental_stop_hits", 0) or 0)) + max(
-            0,
-            int(payload.get("incremental_stop_hits", 0) or 0),
-        )
-        pages_scanned = max(0, int(existing.get("pages_scanned", 0) or 0)) + max(0, int(payload.get("pages_scanned", 0) or 0))
-        channel_name = str(payload.get("channel_name", "") or "").strip() or str(existing.get("channel_name", "") or "").strip() or channel_id
-        last_error = str(payload.get("last_error", "") or "").strip() or str(existing.get("last_error", "") or "").strip()
-        last_searched_at = (
-            str(payload.get("last_searched_at", "") or "").strip()
-            or now_iso
-        )
-        last_matched_at = (
-            str(payload.get("last_matched_at", "") or "").strip()
-            or (now_iso if int(payload.get("matched_runs", 0) or 0) > 0 else str(existing.get("last_matched_at", "") or "").strip())
-        )
-        cursor.execute(
-            """
-            INSERT INTO subscription_channel_support_stats(
-                channel_id, channel_name, searched_runs, matched_runs, matched_items,
-                error_runs, incremental_stop_hits, pages_scanned, last_task_name,
-                last_provider, last_trigger, last_error, last_searched_at,
-                last_matched_at, updated_at
+    with db_connection() as conn:
+        cursor = conn.cursor()
+        written = 0
+        for channel_id, payload in normalized_payload.items():
+            existing = existing_rows.get(channel_id, {})
+            searched_runs = max(0, int(existing.get("searched_runs", 0) or 0)) + max(0, int(payload.get("searched_runs", 0) or 0))
+            matched_runs = max(0, int(existing.get("matched_runs", 0) or 0)) + max(0, int(payload.get("matched_runs", 0) or 0))
+            matched_items = max(0, int(existing.get("matched_items", 0) or 0)) + max(0, int(payload.get("matched_items", 0) or 0))
+            error_runs = max(0, int(existing.get("error_runs", 0) or 0)) + max(0, int(payload.get("error_runs", 0) or 0))
+            incremental_stop_hits = max(0, int(existing.get("incremental_stop_hits", 0) or 0)) + max(
+                0,
+                int(payload.get("incremental_stop_hits", 0) or 0),
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(channel_id)
-            DO UPDATE SET
-                channel_name = excluded.channel_name,
-                searched_runs = excluded.searched_runs,
-                matched_runs = excluded.matched_runs,
-                matched_items = excluded.matched_items,
-                error_runs = excluded.error_runs,
-                incremental_stop_hits = excluded.incremental_stop_hits,
-                pages_scanned = excluded.pages_scanned,
-                last_task_name = excluded.last_task_name,
-                last_provider = excluded.last_provider,
-                last_trigger = excluded.last_trigger,
-                last_error = excluded.last_error,
-                last_searched_at = excluded.last_searched_at,
-                last_matched_at = excluded.last_matched_at,
-                updated_at = excluded.updated_at
-            """,
-            (
-                channel_id,
-                channel_name,
-                searched_runs,
-                matched_runs,
-                matched_items,
-                error_runs,
-                incremental_stop_hits,
-                pages_scanned,
-                normalized_task_name,
-                normalized_provider,
-                normalized_trigger,
-                last_error,
-                last_searched_at,
-                last_matched_at,
-                now_iso,
-            ),
-        )
-        written += 1
-    conn.commit()
-    conn.close()
+            pages_scanned = max(0, int(existing.get("pages_scanned", 0) or 0)) + max(0, int(payload.get("pages_scanned", 0) or 0))
+            channel_name = str(payload.get("channel_name", "") or "").strip() or str(existing.get("channel_name", "") or "").strip() or channel_id
+            last_error = str(payload.get("last_error", "") or "").strip() or str(existing.get("last_error", "") or "").strip()
+            last_searched_at = (
+                str(payload.get("last_searched_at", "") or "").strip()
+                or now_iso
+            )
+            last_matched_at = (
+                str(payload.get("last_matched_at", "") or "").strip()
+                or (now_iso if int(payload.get("matched_runs", 0) or 0) > 0 else str(existing.get("last_matched_at", "") or "").strip())
+            )
+            cursor.execute(
+                """
+                INSERT INTO subscription_channel_support_stats(
+                    channel_id, channel_name, searched_runs, matched_runs, matched_items,
+                    error_runs, incremental_stop_hits, pages_scanned, last_task_name,
+                    last_provider, last_trigger, last_error, last_searched_at,
+                    last_matched_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(channel_id)
+                DO UPDATE SET
+                    channel_name = excluded.channel_name,
+                    searched_runs = excluded.searched_runs,
+                    matched_runs = excluded.matched_runs,
+                    matched_items = excluded.matched_items,
+                    error_runs = excluded.error_runs,
+                    incremental_stop_hits = excluded.incremental_stop_hits,
+                    pages_scanned = excluded.pages_scanned,
+                    last_task_name = excluded.last_task_name,
+                    last_provider = excluded.last_provider,
+                    last_trigger = excluded.last_trigger,
+                    last_error = excluded.last_error,
+                    last_searched_at = excluded.last_searched_at,
+                    last_matched_at = excluded.last_matched_at,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    channel_id,
+                    channel_name,
+                    searched_runs,
+                    matched_runs,
+                    matched_items,
+                    error_runs,
+                    incremental_stop_hits,
+                    pages_scanned,
+                    normalized_task_name,
+                    normalized_provider,
+                    normalized_trigger,
+                    last_error,
+                    last_searched_at,
+                    last_matched_at,
+                    now_iso,
+                ),
+            )
+            written += 1
+        conn.commit()
     return written
 
 def load_subscription_task_state(task_name: str, media_type: str = "movie") -> Dict[str, Any]:
-    ensure_db()
-    conn = open_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM subscription_task_state WHERE task_name = ?", (str(task_name or "").strip(),))
-    row = cursor.fetchone()
-    conn.close()
+    with db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM subscription_task_state WHERE task_name = ?", (str(task_name or "").strip(),))
+        row = cursor.fetchone()
     if not row:
         return {
             "task_name": str(task_name or "").strip(),
@@ -698,47 +675,45 @@ def upsert_subscription_task_state(task_name: str, **fields: Any) -> None:
         return
     max_attempts = 4
     for attempt in range(max_attempts):
-        conn: Optional[sqlite3.Connection] = None
         try:
             current = load_subscription_task_state(task_key)
-            ensure_db()
-            conn = open_db()
-            cursor = conn.cursor()
-            payload = {**current}
-            payload.update(fields)
-            stats_value = payload.get("stats", {})
-            if not isinstance(stats_value, dict):
-                stats_value = {}
-            now = now_text()
-            cursor.execute(
-                """
-                INSERT OR REPLACE INTO subscription_task_state(
-                    task_name, media_type, status, progress, detail, last_run_at, last_success_at, last_error,
-                    last_episode, total_episodes, matched_resource_id, matched_resource_title, matched_score,
-                    queued_job_id, stats_json, updated_at
+            with db_connection() as conn:
+                cursor = conn.cursor()
+                payload = {**current}
+                payload.update(fields)
+                stats_value = payload.get("stats", {})
+                if not isinstance(stats_value, dict):
+                    stats_value = {}
+                now = now_text()
+                cursor.execute(
+                    """
+                    INSERT OR REPLACE INTO subscription_task_state(
+                        task_name, media_type, status, progress, detail, last_run_at, last_success_at, last_error,
+                        last_episode, total_episodes, matched_resource_id, matched_resource_title, matched_score,
+                        queued_job_id, stats_json, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        task_key,
+                        str(payload.get("media_type", "movie") or "movie").strip().lower() or "movie",
+                        str(payload.get("status", "idle") or "idle").strip().lower(),
+                        max(0, min(100, int(payload.get("progress", 0) or 0))),
+                        str(payload.get("detail", "") or "").strip(),
+                        str(payload.get("last_run_at", "") or "").strip(),
+                        str(payload.get("last_success_at", "") or "").strip(),
+                        str(payload.get("last_error", "") or "").strip(),
+                        max(0, int(payload.get("last_episode", 0) or 0)),
+                        max(0, int(payload.get("total_episodes", 0) or 0)),
+                        max(0, int(payload.get("matched_resource_id", 0) or 0)),
+                        str(payload.get("matched_resource_title", "") or "").strip(),
+                        max(0, int(payload.get("matched_score", 0) or 0)),
+                        max(0, int(payload.get("queued_job_id", 0) or 0)),
+                        safe_json_dumps(stats_value),
+                        now,
+                    ),
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    task_key,
-                    str(payload.get("media_type", "movie") or "movie").strip().lower() or "movie",
-                    str(payload.get("status", "idle") or "idle").strip().lower(),
-                    max(0, min(100, int(payload.get("progress", 0) or 0))),
-                    str(payload.get("detail", "") or "").strip(),
-                    str(payload.get("last_run_at", "") or "").strip(),
-                    str(payload.get("last_success_at", "") or "").strip(),
-                    str(payload.get("last_error", "") or "").strip(),
-                    max(0, int(payload.get("last_episode", 0) or 0)),
-                    max(0, int(payload.get("total_episodes", 0) or 0)),
-                    max(0, int(payload.get("matched_resource_id", 0) or 0)),
-                    str(payload.get("matched_resource_title", "") or "").strip(),
-                    max(0, int(payload.get("matched_score", 0) or 0)),
-                    max(0, int(payload.get("queued_job_id", 0) or 0)),
-                    safe_json_dumps(stats_value),
-                    now,
-                ),
-            )
-            conn.commit()
+                conn.commit()
             schedule_ui_state_push(0)
             return
         except sqlite3.OperationalError as exc:
@@ -747,9 +722,6 @@ def upsert_subscription_task_state(task_name: str, **fields: Any) -> None:
             if (not retryable) or attempt >= max_attempts - 1:
                 raise
             time.sleep(0.15 * (attempt + 1))
-        finally:
-            if conn is not None:
-                conn.close()
 
 def list_subscription_task_runtime(cfg: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     cfg = cfg or get_config()
@@ -815,20 +787,18 @@ def find_subscription_task_match_candidate(task: Dict[str, Any], last_episode: i
     query_tokens = build_subscription_query_tokens(task)
     if not query_tokens:
         return {}
-    ensure_db()
-    conn = open_db()
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        SELECT * FROM resource_items
-        WHERE link_url <> ''
-        ORDER BY CASE WHEN published_at <> '' THEN published_at ELSE created_at END DESC, id DESC
-        LIMIT ?
-        """,
-        (max(80, min(1200, int(limit or 400))),),
-    )
-    rows = cursor.fetchall()
-    conn.close()
+    with db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT * FROM resource_items
+            WHERE link_url <> ''
+            ORDER BY CASE WHEN published_at <> '' THEN published_at ELSE created_at END DESC, id DESC
+            LIMIT ?
+            """,
+            (max(80, min(1200, int(limit or 400))),),
+        )
+        rows = cursor.fetchall()
 
     provider = normalize_subscription_provider(task.get("provider", "115"), fallback="115")
     try:

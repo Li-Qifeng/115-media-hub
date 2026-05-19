@@ -2,7 +2,7 @@ import base64
 from http.cookies import SimpleCookie
 from typing import Iterator
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 
 from ..core import *  # noqa: F401,F403
@@ -206,7 +206,7 @@ _M115_G_KEY_L = [120, 6, 173, 76, 51, 134, 93, 24, 76, 1, 63, 70]
 _DEFAULT_115_USER_AGENT = "Mozilla/5.0 115-media-hub"
 
 
-@router.get("/strm/orphan-metadata/preview")
+@router.get("/strm/orphan-metadata/preview", dependencies=[Depends(require_auth)])
 async def preview_strm_orphan_metadata(request: Request) -> Dict[str, Any]:
     root = request.query_params.get("root")
     try:
@@ -215,7 +215,7 @@ async def preview_strm_orphan_metadata(request: Request) -> Dict[str, Any]:
         return JSONResponse(status_code=400, content={"ok": False, "msg": str(exc)})
 
 
-@router.post("/strm/orphan-metadata/delete")
+@router.post("/strm/orphan-metadata/delete", dependencies=[Depends(require_auth)])
 async def delete_strm_orphan_metadata(request: Request) -> Dict[str, Any]:
     data = await request.json()
     paths = data.get("paths", []) if isinstance(data, dict) else []
@@ -226,7 +226,7 @@ async def delete_strm_orphan_metadata(request: Request) -> Dict[str, Any]:
         return JSONResponse(status_code=400, content={"ok": False, "msg": str(exc)})
 
 
-@router.get("/strm/orphan-metadata/local-dirs")
+@router.get("/strm/orphan-metadata/local-dirs", dependencies=[Depends(require_auth)])
 async def list_strm_cleanup_local_dirs(request: Request) -> Dict[str, Any]:
     path = request.query_params.get("path")
     try:

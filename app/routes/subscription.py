@@ -76,8 +76,9 @@ async def save_subscription_tasks(request: Request) -> Dict[str, Any]:
         if dead_name not in alive:
             subscription_last_run.pop(dead_name, None)
             subscription_next_run.pop(dead_name, None)
-    subscription_queue[:] = [item for item in subscription_queue if item.get("task_name") in alive]
-    subscription_status["queued"] = [item["task_name"] for item in subscription_queue]
+    with subscription_queue_lock:
+        subscription_queue[:] = [item for item in subscription_queue if item.get("task_name") in alive]
+        subscription_status["queued"] = [item["task_name"] for item in subscription_queue]
     prune_subscription_state_for_missing_tasks(list(alive))
     schedule_ui_state_push(0)
     return {"ok": True, "tasks": list_subscription_task_runtime(cfg)}
@@ -230,8 +231,9 @@ async def delete_subscription_task(request: Request) -> Dict[str, Any]:
     if len(cfg["subscription_tasks"]) == before:
         return JSONResponse(status_code=404, content={"ok": False, "msg": "任务不存在"})
     save_config(cfg)
-    subscription_queue[:] = [item for item in subscription_queue if item.get("task_name") != task_name]
-    subscription_status["queued"] = [item["task_name"] for item in subscription_queue]
+    with subscription_queue_lock:
+        subscription_queue[:] = [item for item in subscription_queue if item.get("task_name") != task_name]
+        subscription_status["queued"] = [item["task_name"] for item in subscription_queue]
     subscription_last_run.pop(task_name, None)
     subscription_next_run.pop(task_name, None)
     prune_subscription_state_for_missing_tasks([task.get("name", "") for task in cfg.get("subscription_tasks", [])])

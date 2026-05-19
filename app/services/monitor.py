@@ -412,12 +412,13 @@ async def run_monitor_task(
 
 
 async def start_next_monitor_job() -> None:
-    if monitor_status["running"] or not monitor_queue:
+    with monitor_queue_lock:
+        if monitor_status["running"] or not monitor_queue:
+            monitor_status["queued"] = [item["task_name"] for item in monitor_queue]
+            schedule_ui_state_push(0)
+            return
+        next_job = monitor_queue.pop(0)
         monitor_status["queued"] = [item["task_name"] for item in monitor_queue]
-        schedule_ui_state_push(0)
-        return
-    next_job = monitor_queue.pop(0)
-    monitor_status["queued"] = [item["task_name"] for item in monitor_queue]
     schedule_ui_state_push(0)
     submit_background(
         run_monitor_task,

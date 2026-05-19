@@ -4,6 +4,7 @@ import unicodedata
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ..core import *  # noqa: F401,F403
+from ..db import db_connection
 from ..providers.pan115 import invalidate_115_entries_cache
 from ..providers.registry import get_or_none as get_provider_or_none, list_enabled as list_enabled_providers
 from ..media_tags import media_tag_labels, remove_media_tags
@@ -1292,54 +1293,53 @@ def _insert_scraper_job(provider: str, plan: Dict[str, Any], options: Dict[str, 
     ensure_db()
     now = now_text()
     actions = [item for item in plan.get("actions", []) if isinstance(item, dict)]
-    conn = open_db()
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        INSERT INTO scraper_jobs(
-            provider, status, status_detail, total_actions, created_at, updated_at,
-            options_json, tmdb_json, plan_json
-        ) VALUES (?, 'pending', '等待执行', ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            provider,
-            len(actions),
-            now,
-            now,
-            safe_json_dumps(options),
-            safe_json_dumps(tmdb),
-            safe_json_dumps({"base_cid": plan.get("base_cid", "0"), "actions": actions}),
-        ),
-    )
-    job_id = int(cursor.lastrowid or 0)
-    for action in actions:
+    with db_connection() as conn:
+        cursor = conn.cursor()
         cursor.execute(
             """
-            INSERT INTO scraper_job_actions(
-                job_id, action_index, provider, entry_id, is_dir, old_parent_id, old_name, old_path,
-                new_parent_id, new_name, new_path, target_parent_path, status, status_detail,
-                created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', '', ?, ?)
+            INSERT INTO scraper_jobs(
+                provider, status, status_detail, total_actions, created_at, updated_at,
+                options_json, tmdb_json, plan_json
+            ) VALUES (?, 'pending', '等待执行', ?, ?, ?, ?, ?, ?)
             """,
             (
-                job_id,
-                max(0, parse_int(action.get("action_index"), 0)),
                 provider,
-                str(action.get("entry_id", "") or ""),
-                1 if action.get("is_dir") else 0,
-                str(action.get("old_parent_id", "") or "0"),
-                str(action.get("old_name", "") or ""),
-                str(action.get("old_path", "") or ""),
-                str(action.get("new_parent_id", "") or ""),
-                str(action.get("new_name", "") or ""),
-                str(action.get("new_path", "") or ""),
-                str(action.get("target_parent_path", "") or ""),
+                len(actions),
                 now,
                 now,
+                safe_json_dumps(options),
+                safe_json_dumps(tmdb),
+                safe_json_dumps({"base_cid": plan.get("base_cid", "0"), "actions": actions}),
             ),
         )
-    conn.commit()
-    conn.close()
+        job_id = int(cursor.lastrowid or 0)
+        for action in actions:
+            cursor.execute(
+                """
+                INSERT INTO scraper_job_actions(
+                    job_id, action_index, provider, entry_id, is_dir, old_parent_id, old_name, old_path,
+                    new_parent_id, new_name, new_path, target_parent_path, status, status_detail,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', '', ?, ?)
+                """,
+                (
+                    job_id,
+                    max(0, parse_int(action.get("action_index"), 0)),
+                    provider,
+                    str(action.get("entry_id", "") or ""),
+                    1 if action.get("is_dir") else 0,
+                    str(action.get("old_parent_id", "") or "0"),
+                    str(action.get("old_name", "") or ""),
+                    str(action.get("old_path", "") or ""),
+                    str(action.get("new_parent_id", "") or ""),
+                    str(action.get("new_name", "") or ""),
+                    str(action.get("new_path", "") or ""),
+                    str(action.get("target_parent_path", "") or ""),
+                    now,
+                    now,
+                ),
+            )
+        conn.commit()
     return job_id
 
 
@@ -1412,26 +1412,25 @@ def _serialize_scraper_job_row(row: Any, actions: Optional[List[Dict[str, Any]]]
 
 def get_scraper_jobs_state(limit: int = SCRAPER_JOB_LIMIT_DEFAULT, job_id: int = 0) -> Dict[str, Any]:
     ensure_db()
-    conn = open_db()
-    cursor = conn.cursor()
-    if job_id > 0:
-        cursor.execute("SELECT * FROM scraper_jobs WHERE id = ?", (int(job_id),))
-        rows = cursor.fetchall()
-    else:
-        cursor.execute(
-            "SELECT * FROM scraper_jobs ORDER BY id DESC LIMIT ?",
-            (max(1, min(100, int(limit or SCRAPER_JOB_LIMIT_DEFAULT))),),
-        )
-        rows = cursor.fetchall()
-    jobs: List[Dict[str, Any]] = []
-    for row in rows:
-        row_id = int(row["id"] or 0)
-        cursor.execute("SELECT * FROM scraper_job_actions WHERE job_id = ? ORDER BY action_index ASC", (row_id,))
-        actions = [_serialize_scraper_action_row(action_row) for action_row in cursor.fetchall()]
-        jobs.append(_serialize_scraper_job_row(row, actions))
-    cursor.execute("SELECT status, COUNT(1) AS count FROM scraper_jobs GROUP BY status")
-    status_counts = {str(row["status"] or ""): int(row["count"] or 0) for row in cursor.fetchall()}
-    conn.close()
+    with db_connection() as conn:
+        cursor = conn.cursor()
+        if job_id > 0:
+            cursor.execute("SELECT * FROM scraper_jobs WHERE id = ?", (int(job_id),))
+            rows = cursor.fetchall()
+        else:
+            cursor.execute(
+                "SELECT * FROM scraper_jobs ORDER BY id DESC LIMIT ?",
+                (max(1, min(100, int(limit or SCRAPER_JOB_LIMIT_DEFAULT))),),
+            )
+            rows = cursor.fetchall()
+        jobs: List[Dict[str, Any]] = []
+        for row in rows:
+            row_id = int(row["id"] or 0)
+            cursor.execute("SELECT * FROM scraper_job_actions WHERE job_id = ? ORDER BY action_index ASC", (row_id,))
+            actions = [_serialize_scraper_action_row(action_row) for action_row in cursor.fetchall()]
+            jobs.append(_serialize_scraper_job_row(row, actions))
+        cursor.execute("SELECT status, COUNT(1) AS count FROM scraper_jobs GROUP BY status")
+        status_counts = {str(row["status"] or ""): int(row["count"] or 0) for row in cursor.fetchall()}
     counts = {
         "total": sum(status_counts.values()),
         "active": sum(status_counts.get(status, 0) for status in ("pending", "running", "rollback_running")),
@@ -1457,38 +1456,37 @@ def clear_scraper_jobs(scope: str = "completed") -> Dict[str, int]:
         target_statuses = ["completed"]
 
     ensure_db()
-    conn = open_db()
-    cursor = conn.cursor()
-    placeholders = ",".join(["?"] * len(target_statuses))
-    cursor.execute(
-        f"SELECT COUNT(1) FROM scraper_job_actions WHERE job_id IN (SELECT id FROM scraper_jobs WHERE status IN ({placeholders}))",
-        tuple(target_statuses),
-    )
-    action_row = cursor.fetchone()
-    deleted_actions = int(action_row[0] if action_row else 0)
-    cursor.execute(
-        f"DELETE FROM scraper_job_actions WHERE job_id IN (SELECT id FROM scraper_jobs WHERE status IN ({placeholders}))",
-        tuple(target_statuses),
-    )
-    cursor.execute(
-        f"DELETE FROM scraper_jobs WHERE status IN ({placeholders})",
-        tuple(target_statuses),
-    )
-    deleted_jobs = int(cursor.rowcount or 0)
+    with db_connection() as conn:
+        cursor = conn.cursor()
+        placeholders = ",".join(["?"] * len(target_statuses))
+        cursor.execute(
+            f"SELECT COUNT(1) FROM scraper_job_actions WHERE job_id IN (SELECT id FROM scraper_jobs WHERE status IN ({placeholders}))",
+            tuple(target_statuses),
+        )
+        action_row = cursor.fetchone()
+        deleted_actions = int(action_row[0] if action_row else 0)
+        cursor.execute(
+            f"DELETE FROM scraper_job_actions WHERE job_id IN (SELECT id FROM scraper_jobs WHERE status IN ({placeholders}))",
+            tuple(target_statuses),
+        )
+        cursor.execute(
+            f"DELETE FROM scraper_jobs WHERE status IN ({placeholders})",
+            tuple(target_statuses),
+        )
+        deleted_jobs = int(cursor.rowcount or 0)
 
-    cursor.execute("SELECT COUNT(1) FROM scraper_jobs")
-    remaining_jobs_row = cursor.fetchone()
-    remaining_jobs = int(remaining_jobs_row[0] if remaining_jobs_row else 0)
-    if remaining_jobs == 0:
-        cursor.execute("DELETE FROM sqlite_sequence WHERE name = 'scraper_jobs'")
-    cursor.execute("SELECT COUNT(1) FROM scraper_job_actions")
-    remaining_actions_row = cursor.fetchone()
-    remaining_actions = int(remaining_actions_row[0] if remaining_actions_row else 0)
-    if remaining_actions == 0:
-        cursor.execute("DELETE FROM sqlite_sequence WHERE name = 'scraper_job_actions'")
+        cursor.execute("SELECT COUNT(1) FROM scraper_jobs")
+        remaining_jobs_row = cursor.fetchone()
+        remaining_jobs = int(remaining_jobs_row[0] if remaining_jobs_row else 0)
+        if remaining_jobs == 0:
+            cursor.execute("DELETE FROM sqlite_sequence WHERE name = 'scraper_jobs'")
+        cursor.execute("SELECT COUNT(1) FROM scraper_job_actions")
+        remaining_actions_row = cursor.fetchone()
+        remaining_actions = int(remaining_actions_row[0] if remaining_actions_row else 0)
+        if remaining_actions == 0:
+            cursor.execute("DELETE FROM sqlite_sequence WHERE name = 'scraper_job_actions'")
 
-    conn.commit()
-    conn.close()
+        conn.commit()
     return {
         "scope": normalized_scope,
         "deleted": deleted_jobs,
@@ -1498,16 +1496,14 @@ def clear_scraper_jobs(scope: str = "completed") -> Dict[str, int]:
 
 def _load_scraper_job(job_id: int) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     ensure_db()
-    conn = open_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM scraper_jobs WHERE id = ?", (int(job_id),))
-    job = sqlite_row_to_dict(cursor.fetchone())
-    if not job:
-        conn.close()
-        raise RuntimeError("刮削任务不存在")
-    cursor.execute("SELECT * FROM scraper_job_actions WHERE job_id = ? ORDER BY action_index ASC", (int(job_id),))
-    actions = [sqlite_row_to_dict(row) for row in cursor.fetchall()]
-    conn.close()
+    with db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM scraper_jobs WHERE id = ?", (int(job_id),))
+        job = sqlite_row_to_dict(cursor.fetchone())
+        if not job:
+            raise RuntimeError("刮削任务不存在")
+        cursor.execute("SELECT * FROM scraper_job_actions WHERE job_id = ? ORDER BY action_index ASC", (int(job_id),))
+        actions = [sqlite_row_to_dict(row) for row in cursor.fetchall()]
     return job, actions
 
 
@@ -1531,10 +1527,9 @@ def _update_scraper_job(job_id: int, **fields: Any) -> None:
     payload["updated_at"] = now_text()
     sets = ", ".join(f"{key} = ?" for key in payload.keys())
     values = list(payload.values()) + [int(job_id)]
-    conn = open_db()
-    conn.execute(f"UPDATE scraper_jobs SET {sets} WHERE id = ?", values)
-    conn.commit()
-    conn.close()
+    with db_connection() as conn:
+        conn.execute(f"UPDATE scraper_jobs SET {sets} WHERE id = ?", values)
+        conn.commit()
 
 
 def _update_scraper_action(action_id: int, **fields: Any) -> None:
@@ -1547,10 +1542,9 @@ def _update_scraper_action(action_id: int, **fields: Any) -> None:
     payload["updated_at"] = now_text()
     sets = ", ".join(f"{key} = ?" for key in payload.keys())
     values = list(payload.values()) + [int(action_id)]
-    conn = open_db()
-    conn.execute(f"UPDATE scraper_job_actions SET {sets} WHERE id = ?", values)
-    conn.commit()
-    conn.close()
+    with db_connection() as conn:
+        conn.execute(f"UPDATE scraper_job_actions SET {sets} WHERE id = ?", values)
+        conn.commit()
 
 
 def _build_temp_name(action_id: int, entry_id: str, original_name: str) -> str:

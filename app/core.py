@@ -1,10 +1,12 @@
 import asyncio
 import contextvars
 import hashlib
+import hmac
 import json
 import math
 import os
 import re
+import secrets
 import sqlite3
 import ssl
 import threading
@@ -16,7 +18,7 @@ from datetime import datetime, timedelta
 from html import unescape
 from typing import Any, AsyncIterator, Dict, List, Optional, Set, Tuple
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -27,6 +29,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from .config_store import JsonConfigStore
 from .db import (
     DB_PATH,
+    db_connection,
     ensure_db,
     ensure_parent,
     merge_json_object,
@@ -246,13 +249,57 @@ def check_resource_search_cancelled(search_id: Any) -> None:
         raise ResourceSearchCancelled("搜索已中断")
 
 
+def _resolve_session_secret() -> str:
+    secret_path = "/app/config/.session_secret"
+    try:
+        if os.path.exists(secret_path):
+            with open(secret_path, "r") as f:
+                secret = f.read().strip()
+            if len(secret) >= 32:
+                return secret
+        secret = secrets.token_hex(32)
+        os.makedirs(os.path.dirname(secret_path), exist_ok=True)
+        with open(secret_path, "w") as f:
+            f.write(secret)
+        return secret
+    except Exception:
+        return secrets.token_hex(32)
+
+
 app = FastAPI()
 app.add_middleware(
     SessionMiddleware,
-    secret_key="115-strm-v7-multi",
-    https_only=False,
+    secret_key=_resolve_session_secret(),
+    https_only=_env_flag("SESSION_HTTPS_ONLY", False),
     same_site="lax",
 )
+
+def hash_password(plain: str) -> str:
+    salt = secrets.token_hex(16)
+    dk = hashlib.pbkdf2_hmac("sha256", plain.encode("utf-8"), salt.encode("utf-8"), 200_000)
+    return f"$pbkdf2${salt}${dk.hex()}"
+
+
+def verify_password(plain: str, stored: str) -> bool:
+    try:
+        if not stored.startswith("$pbkdf2$"):
+            return hmac.compare_digest(plain, stored)
+        _, salt, expected_hex = stored.split("$", 2)
+        dk = hashlib.pbkdf2_hmac("sha256", plain.encode("utf-8"), salt.encode("utf-8"), 200_000)
+        return hmac.compare_digest(dk.hex(), expected_hex)
+    except Exception:
+        return False
+
+
+def is_password_hashed(stored: str) -> bool:
+    return bool(stored) and stored.startswith("$pbkdf2$")
+
+
+async def require_auth(request: Request) -> None:
+    if not request.session.get("logged_in"):
+        raise HTTPException(status_code=401, detail="未登录")
+
+
 app.add_middleware(
     GZipMiddleware,
     minimum_size=1024,
@@ -268,7 +315,7 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return raw in {"1", "true", "yes", "on", "enable", "enabled"}
 
 
-cors_allow_origins = _split_env_list(os.environ.get("CORS_ALLOW_ORIGINS", "*")) or ["*"]
+cors_allow_origins = _split_env_list(os.environ.get("CORS_ALLOW_ORIGINS", ""))
 cors_allow_origin_regex = str(os.environ.get("CORS_ALLOW_ORIGIN_REGEX", "") or "").strip() or None
 cors_allow_credentials = _env_flag("CORS_ALLOW_CREDENTIALS", False)
 if cors_allow_credentials and "*" in cors_allow_origins:
@@ -2444,6 +2491,9 @@ def normalize_config(cfg: Dict[str, Any]) -> Dict[str, Any]:
         fallback=TG_CHANNEL_SYNC_LIMIT_DEFAULT,
     )
     merged["provider_enabled"] = normalize_provider_enabled_config(merged)
+    stored_pw = str(merged.get("password", "") or "")
+    if stored_pw and not is_password_hashed(stored_pw):
+        merged["password"] = hash_password(stored_pw)
     return order_config_for_save(merged)
 
 
@@ -3679,6 +3729,7 @@ monitor_status = {
     "summary": {"step": "空闲", "detail": "等待监控任务"},
 }
 monitor_control = {"cancel": False}
+monitor_queue_lock = threading.Lock()
 monitor_queue: List[Dict[str, Any]] = []
 monitor_last_run: Dict[str, float] = {}
 monitor_next_run: Dict[str, str] = {}
@@ -3690,6 +3741,7 @@ subscription_status = {
     "summary": {"step": "空闲", "detail": "等待订阅任务"},
 }
 subscription_control = {"cancel": False}
+subscription_queue_lock = threading.Lock()
 subscription_queue: List[Dict[str, Any]] = []
 subscription_last_run: Dict[str, float] = {}
 subscription_next_run: Dict[str, str] = {}
@@ -3697,6 +3749,7 @@ subscription_log_context_var: contextvars.ContextVar[Optional[Dict[str, Any]]] =
     "subscription_log_context",
     default=None,
 )
+subscription_log_seq_lock = threading.Lock()
 subscription_log_seq = 0
 subscription_log_task_total = 0
 sign115_status = {
@@ -3709,6 +3762,7 @@ sign115_status = {
     "last_sign_at": "",
     "last_trigger": "",
 }
+sign115_lock = threading.Lock()
 sign115_runtime = {
     "running": False,
     "last_auto_date": "",
@@ -3748,6 +3802,7 @@ UI_FULL_BROADCAST_INTERVAL_SECONDS = 30.0
 ui_event_loop: Optional[asyncio.AbstractEventLoop] = None
 ui_push_pending = False
 ui_push_task: Optional[asyncio.Task] = None
+resource_job_lock = threading.Lock()
 resource_job_running: Set[int] = set()
 resource_refresh_pending: Set[int] = set()
 resource_job_cancel_requested: Set[int] = set()
@@ -5051,8 +5106,9 @@ def _tail_subscription_ui_logs(logs: Any, limit: int = SUBSCRIPTION_UI_RECENT_LO
 
 def _next_subscription_log_seq() -> int:
     global subscription_log_seq
-    subscription_log_seq += 1
-    return subscription_log_seq
+    with subscription_log_seq_lock:
+        subscription_log_seq += 1
+        return subscription_log_seq
 
 
 def build_subscription_log_preview(logs: Any = None) -> Dict[str, Any]:

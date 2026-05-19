@@ -1417,8 +1417,9 @@ async def _run_subscription_task_quark(
             task_obj.result()
         except asyncio.CancelledError:
             pass
-        except Exception:
-            pass
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("后台任务异常: %s", exc, exc_info=True)
 
     _subscription_stage_timer_enter(stage_timer, "import")
     candidate_queue = list(attempt_candidates)
@@ -3152,8 +3153,9 @@ async def run_subscription_task(
                 task.result()
             except asyncio.CancelledError:
                 pass
-            except Exception:
-                pass
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).warning("后台任务异常: %s", exc, exc_info=True)
 
         _subscription_stage_timer_enter(stage_timer, "import")
         if task["media_type"] == "tv" and attempt_candidates:
@@ -5026,11 +5028,13 @@ async def run_subscription_task(
                 )
                 try:
                     await write_subscription_log(fallback_detail, "warn")
-                except Exception:
-                    pass
+                except Exception as exc:
+                    import logging
+                    logging.getLogger(__name__).warning("订阅日志写入失败: %s", exc)
                 tail_status = "failed"
-        except Exception:
-            pass
+        except Exception as outer_exc:
+            import logging
+            logging.getLogger(__name__).error("订阅任务异常退出: %s", outer_exc, exc_info=True)
 
         # 优先回收运行态，避免日志写入异常导致 UI 长时间停在“运行中”。
         subscription_status["running"] = False
@@ -5047,18 +5051,21 @@ async def run_subscription_task(
             stage_timing_line, total_timing_line = _build_subscription_stage_timing_log_lines(stage_timer)
             await write_subscription_log(stage_timing_line, "info")
             await write_subscription_log(total_timing_line, "info")
-        except Exception:
-            pass
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("阶段计时日志写入失败: %s", exc)
         try:
             await write_subscription_log(
                 f"━━━━━━━━━━【订阅结束 | {task_name} | {tail_status_label or '已结束'}】━━━━━━━━━━",
                 "task-divider",
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning("订阅结束日志写入失败: %s", exc)
         reset_subscription_log_context(subscription_log_context_token)
         try:
             await start_next_subscription_job()
-        except Exception:
-            pass
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).error("启动下一个订阅任务失败: %s", exc, exc_info=True)
         release_process_memory(f"subscription:{task_name}")
