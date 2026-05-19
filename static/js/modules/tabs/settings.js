@@ -180,7 +180,7 @@ function collectSettingsPayload({
         providerEnabled[p.name] = enabledEl ? enabledEl.checked : p.enabled;
     });
     cfg.provider_enabled = providerEnabled;
-    cfg.default_magnet_provider = document.getElementById('default_magnet_provider')?.value || '115';
+    cfg.default_magnet_provider = '115';
 
     const rawTmdbCacheTtl = parseInt(document.getElementById('tmdb_cache_ttl_hours')?.value || '', 10);
     cfg.tmdb_cache_ttl_hours = Math.min(720, Math.max(1, Number.isFinite(rawTmdbCacheTtl) ? rawTmdbCacheTtl : 24));
@@ -742,20 +742,18 @@ export function renderMagnetProviderSetting(cfg) {
     const container = document.getElementById('settings-magnet-provider-container');
     if (!container) return;
     const meta = window.providerMeta || [];
-    const offlineProviders = meta.filter(p => p.supports_offline && p.enabled);
-    const currentValue = cfg.default_magnet_provider || '115';
+    const pan115 = meta.find(p => p.name === '115');
+    const label = pan115?.label || '115网盘';
 
     container.innerHTML = `
         <div class="provider-auth-block mb-3 bg-slate-800/50 rounded-xl border border-slate-700/50 overflow-hidden">
             <div class="flex items-center justify-between p-3">
                 <div class="flex items-center gap-3">
-                    <span class="text-sm text-slate-200">磁力默认导入方式</span>
-                    <span class="text-xs text-slate-500">离线下载</span>
+                    <span class="text-sm text-slate-200">磁力下载网盘</span>
+                    <span class="text-xs text-slate-500">固定离线下载</span>
                 </div>
-                <select id="default_magnet_provider" onchange="window._settingsChanged=true" class="bg-slate-700 border border-slate-600 rounded-lg px-3 py-1.5 text-sm text-slate-200">
-                    ${offlineProviders.map(p => `<option value="${p.name}" ${p.name === currentValue ? 'selected' : ''}>${p.label}</option>`).join('')}
-                    <option value="ask" ${currentValue === 'ask' ? 'selected' : ''}>每次询问</option>
-                </select>
+                <input id="default_magnet_provider" type="hidden" value="115">
+                <span class="px-3 py-1.5 rounded-lg bg-slate-700 border border-slate-600 text-sm text-slate-200">${label}</span>
             </div>
         </div>
     `;
@@ -818,6 +816,7 @@ function getCookieHealthDotColor(state) {
     if (state === 'invalid' || state === 'error') return '#ef4444';
     if (state === 'checking') return '#0ea5e9';
     if (state === 'missing') return '#f59e0b';
+    if (state === 'disabled') return '#64748b';
     return '#64748b';
 }
 

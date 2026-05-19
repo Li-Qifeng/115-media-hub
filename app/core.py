@@ -498,6 +498,25 @@ def get_cookie_health_providers() -> Tuple[str, ...]:
         return tuple(p.name for p in list_all() if p.config_keys)
     except Exception:
         return ("115", "quark")
+
+
+def is_cookie_health_provider_enabled(cfg: Optional[Dict[str, Any]], provider: str) -> bool:
+    provider_key = normalize_cookie_health_provider(provider)
+    if not provider_key:
+        return False
+    enabled_map = cfg.get("provider_enabled", {}) if isinstance(cfg, dict) else {}
+    if not isinstance(enabled_map, dict):
+        enabled_map = {}
+    return bool(enabled_map.get(provider_key, provider_key in ("115", "quark")))
+
+
+def get_enabled_cookie_health_providers(cfg: Optional[Dict[str, Any]] = None) -> Tuple[str, ...]:
+    active_cfg = cfg or get_config()
+    return tuple(
+        provider
+        for provider in get_cookie_health_providers()
+        if is_cookie_health_provider_enabled(active_cfg, provider)
+    )
 COOKIE_HEALTH_MIN_REFRESH_INTERVAL_SECONDS = max(
     5,
     min(600, int(os.environ.get("COOKIE_HEALTH_MIN_REFRESH_INTERVAL_SECONDS", 20) or 20)),
@@ -1054,10 +1073,8 @@ def normalize_provider_enabled_config(cfg: Dict[str, Any]) -> Dict[str, bool]:
 
 
 def normalize_magnet_provider(value="115"):
-    """标准化磁力默认导入网盘，可为 '115', '123pan', 'ask' 等"""
+    """标准化磁力默认导入网盘；当前仅 115 支持 magnet 离线下载。"""
     normalized = str(value or "").strip().lower()
-    if normalized == "ask":
-        return "ask"
     p = _get_provider_or_none(normalized)
     if p and p.supports_offline:
         return p.name
@@ -3991,6 +4008,10 @@ def _cookie_health_missing_message(provider: str) -> str:
     return f"未配置 {_cookie_health_provider_label(provider)} {_cookie_health_auth_label(provider)}"
 
 
+def _cookie_health_disabled_message(provider: str) -> str:
+    return f"{_cookie_health_provider_label(provider)} 未启用"
+
+
 def _cookie_health_unknown_message(provider: str) -> str:
     return f"已配置 {_cookie_health_provider_label(provider)} {_cookie_health_auth_label(provider)}，等待检测"
 
@@ -4062,10 +4083,23 @@ def sync_cookie_health_configured(cfg: Optional[Dict[str, Any]] = None, trigger:
             entry = _ensure_cookie_health_entry_locked(provider)
             if not entry:
                 continue
+            enabled = is_cookie_health_provider_enabled(active_cfg, provider)
+            if not enabled:
+                changed = _set_cookie_health_entry_locked(
+                    provider,
+                    enabled=False,
+                    configured=False,
+                    state="disabled",
+                    message=_cookie_health_disabled_message(provider),
+                    trigger=str(trigger or "").strip(),
+                    fail_count=0,
+                ) or changed
+                continue
             configured = _cookie_health_is_configured(active_cfg, provider)
             if not configured:
                 changed = _set_cookie_health_entry_locked(
                     provider,
+                    enabled=True,
                     configured=False,
                     state="missing",
                     message=_cookie_health_missing_message(provider),
@@ -4074,18 +4108,19 @@ def sync_cookie_health_configured(cfg: Optional[Dict[str, Any]] = None, trigger:
                 ) or changed
                 continue
             if not entry.get("configured", False):
-                changed = _set_cookie_health_entry_locked(provider, configured=True) or changed
+                changed = _set_cookie_health_entry_locked(provider, enabled=True, configured=True) or changed
             state = str(entry.get("state", "") or "").strip().lower()
-            if state in {"", "missing"}:
+            if state in {"", "missing", "disabled"}:
                 changed = _set_cookie_health_entry_locked(
                     provider,
+                    enabled=True,
                     configured=True,
                     state="unknown",
                     message=_cookie_health_unknown_message(provider),
                     trigger=str(trigger or "").strip(),
                 ) or changed
             elif not entry.get("configured", False):
-                changed = _set_cookie_health_entry_locked(provider, configured=True) or changed
+                changed = _set_cookie_health_entry_locked(provider, enabled=True, configured=True) or changed
     if changed:
         schedule_ui_state_push(0)
 
@@ -4097,6 +4132,9 @@ def mark_cookie_health_checking(provider: str, trigger: str = "manual_check") ->
     if is_cookie_health_share_trigger(trigger):
         return
     cfg = get_config()
+    if not is_cookie_health_provider_enabled(cfg, provider_key):
+        sync_cookie_health_configured(cfg, trigger=trigger)
+        return
     configured = _cookie_health_is_configured(cfg, provider_key)
     changed = False
     with cookie_health_lock:
@@ -4134,6 +4172,9 @@ def mark_cookie_health_success(
     if is_cookie_health_share_trigger(trigger):
         return
     cfg = get_config()
+    if not is_cookie_health_provider_enabled(cfg, provider_key):
+        sync_cookie_health_configured(cfg, trigger=trigger)
+        return
     configured = _cookie_health_is_configured(cfg, provider_key)
     now_ts = time.time()
     now_iso = now_text()
@@ -4191,6 +4232,9 @@ def mark_cookie_health_failure(
     if is_cookie_health_share_trigger(trigger):
         return
     cfg = get_config()
+    if not is_cookie_health_provider_enabled(cfg, provider_key):
+        sync_cookie_health_configured(cfg, trigger=trigger)
+        return
     configured = _cookie_health_is_configured(cfg, provider_key)
     now_ts = time.time()
     now_iso = now_text()
@@ -4243,6 +4287,7 @@ def build_cookie_health_payload(cfg: Optional[Dict[str, Any]] = None) -> Dict[st
         for provider in get_cookie_health_providers():
             entry = _ensure_cookie_health_entry_locked(provider)
             payload[provider] = {
+                "enabled": is_cookie_health_provider_enabled(active_cfg, provider),
                 "configured": bool(entry.get("configured", False)),
                 "state": str(entry.get("state", "unknown") or "unknown"),
                 "message": str(entry.get("message", "") or ""),
@@ -4355,16 +4400,16 @@ def _probe_quark_cookie(cookie: str) -> None:
 
 
 def _normalize_cookie_health_providers(providers: Any = None) -> List[str]:
-    raw_items = providers if isinstance(providers, list) else get_cookie_health_providers()
+    raw_items = providers if isinstance(providers, list) else get_enabled_cookie_health_providers()
     if providers is None:
-        raw_items = list(get_cookie_health_providers())
+        raw_items = list(get_enabled_cookie_health_providers())
     normalized: List[str] = []
     for item in raw_items:
         provider = normalize_cookie_health_provider(item)
         if (not provider) or provider in normalized:
             continue
         normalized.append(provider)
-    return normalized or list(get_cookie_health_providers())
+    return normalized or list(get_enabled_cookie_health_providers())
 
 
 async def refresh_cookie_health_status(
@@ -4378,6 +4423,9 @@ async def refresh_cookie_health_status(
     now_ts = time.time()
 
     for provider in provider_list:
+        if not is_cookie_health_provider_enabled(cfg, provider):
+            sync_cookie_health_configured(cfg, trigger=trigger)
+            continue
         if not _cookie_health_is_configured(cfg, provider):
             mark_cookie_health_failure(provider, _cookie_health_missing_message(provider), trigger=trigger, force=True)
             continue

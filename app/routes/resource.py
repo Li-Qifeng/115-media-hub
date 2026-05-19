@@ -959,10 +959,17 @@ async def create_resource_job_endpoint(request: Request) -> Dict[str, Any]:
     cfg = get_config()
     magnet_provider = ""
     if link_type == "magnet":
-        magnet_provider = normalize_magnet_provider(data.get("magnet_provider", "") or cfg.get("default_magnet_provider", "115"))
-        if magnet_provider == "ask":
-            return JSONResponse(status_code=400, content={"ok": False, "msg": "请选择下载网盘"})
-        mp = get_provider_or_none(magnet_provider)
+        requested_magnet_provider = str(data.get("magnet_provider", "") or "").strip().lower()
+        if requested_magnet_provider:
+            mp = get_provider_or_none(requested_magnet_provider)
+            if not mp:
+                return JSONResponse(status_code=400, content={"ok": False, "msg": "所选网盘不存在"})
+            if not mp.supports_offline:
+                return JSONResponse(status_code=400, content={"ok": False, "msg": f"{mp.label} 暂不支持 magnet 离线下载"})
+            magnet_provider = mp.name
+        else:
+            magnet_provider = normalize_magnet_provider(cfg.get("default_magnet_provider", "115"))
+            mp = get_provider_or_none(magnet_provider)
         if not mp or not mp.supports_offline:
             return JSONResponse(status_code=400, content={"ok": False, "msg": "所选网盘不支持离线下载"})
         if not mp.get_cookie(cfg):

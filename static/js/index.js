@@ -26,7 +26,6 @@
         let editingResourceSourceIndex = null;
         let selectedResourceId = null;
         let selectedResourceItem = null;
-        let selectedMagnetProvider = '';
         let resourceModalMode = 'detail';
         let resourceFolderTrail = [{ id: '0', name: '根目录' }];
         let resourceFolderEntries = [];
@@ -1019,14 +1018,18 @@
             const source = raw && typeof raw === 'object' ? raw : {};
             const meta = (window.providerMeta || []).find(p => p.name === provider);
             const providerLabel = meta?.label || provider;
+            const enabled = Object.prototype.hasOwnProperty.call(source, 'enabled')
+                ? source.enabled !== false
+                : meta?.enabled !== false;
             const configured = !!source.configured;
             const rawState = String(source.state || (configured ? 'unknown' : 'missing')).trim().toLowerCase();
-            const state = ['missing', 'unknown', 'checking', 'valid', 'invalid', 'error'].includes(rawState)
+            const state = ['disabled', 'missing', 'unknown', 'checking', 'valid', 'invalid', 'error'].includes(rawState)
                 ? rawState
                 : (configured ? 'unknown' : 'missing');
             let message = String(source.message || '').trim();
             if (!message) {
-                if (state === 'missing') message = `未配置 ${providerLabel} Cookie`;
+                if (state === 'disabled') message = `${providerLabel} 未启用`;
+                else if (state === 'missing') message = `未配置 ${providerLabel} Cookie`;
                 else if (state === 'checking') message = `正在检测 ${providerLabel} Cookie...`;
                 else if (state === 'valid') message = `${providerLabel} Cookie 可用`;
                 else if (state === 'invalid') message = `${providerLabel} Cookie 可能已失效`;
@@ -1034,6 +1037,7 @@
                 else message = `已配置 ${providerLabel} Cookie，等待检测`;
             }
             return {
+                enabled,
                 configured,
                 state,
                 message,
@@ -1060,6 +1064,7 @@
             if (state === 'error') return 'error';
             if (state === 'checking') return 'checking';
             if (state === 'missing') return 'warn';
+            if (state === 'disabled') return 'idle';
             return 'idle';
         }
 

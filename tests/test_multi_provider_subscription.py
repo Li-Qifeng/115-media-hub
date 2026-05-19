@@ -5,8 +5,10 @@ from unittest.mock import AsyncMock, patch
 
 from app.core import (
     build_cookie_health_payload,
+    normalize_magnet_provider,
     normalize_subscription_task,
     normalize_config,
+    refresh_cookie_health_status,
     validate_subscription_runtime_config,
 )
 from app.providers.registry import get_all_capabilities, get_or_none
@@ -73,6 +75,10 @@ class MultiProviderSubscriptionTest(unittest.TestCase):
         self.assertTrue(caps["115"]["supports_strm"])
         for name in ("quark", "tianyi", "123pan", "aliyun"):
             self.assertFalse(caps[name]["supports_strm"])
+        self.assertTrue(caps["115"]["supports_offline"])
+        self.assertFalse(caps["123pan"]["supports_offline"])
+        self.assertEqual(normalize_magnet_provider("123pan"), "115")
+        self.assertEqual(normalize_magnet_provider("ask"), "115")
 
     def test_subscription_fixed_link_uses_current_provider_link_type(self):
         task = normalize_subscription_task(
@@ -165,7 +171,10 @@ class MultiProviderSubscriptionTest(unittest.TestCase):
         self.assertFalse(provider.is_configured({"123pan_username": "demo"}))
         self.assertTrue(provider.is_configured({"123pan_username": "demo", "123pan_password": "secret"}))
 
-        payload = build_cookie_health_payload({"cookie_115": "valid-looking-cookie"})
+        payload = build_cookie_health_payload({
+            "cookie_115": "valid-looking-cookie",
+            "provider_enabled": {"123pan": True},
+        })
         self.assertFalse(payload["123pan"]["configured"])
         self.assertEqual(payload["123pan"]["state"], "missing")
 
@@ -204,12 +213,25 @@ class MultiProviderSubscriptionTest(unittest.TestCase):
         self.assertTrue(provider.is_configured({"cookie_tianyi": "SESSION=old"}))
 
         payload = build_cookie_health_payload({
+            "provider_enabled": {"tianyi": True},
             "tianyi_username": "demo",
             "tianyi_password": "secret",
         })
         self.assertTrue(payload["tianyi"]["configured"])
         self.assertEqual(payload["tianyi"]["state"], "unknown")
         self.assertIn("账号密码 / Cookie", payload["tianyi"]["message"])
+
+    def test_disabled_configured_provider_is_not_cookie_health_warning(self):
+        payload = build_cookie_health_payload({
+            "provider_enabled": {"123pan": False},
+            "123pan_username": "demo",
+            "123pan_password": "secret",
+        })
+
+        self.assertFalse(payload["123pan"]["enabled"])
+        self.assertFalse(payload["123pan"]["configured"])
+        self.assertEqual(payload["123pan"]["state"], "disabled")
+        self.assertIn("未启用", payload["123pan"]["message"])
 
     def test_tianyi_get_cookie_prefers_password_login_and_keeps_cookie_fallback(self):
         provider = TianyiProvider()
@@ -397,6 +419,12 @@ class MultiProviderSubscriptionTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "暂不支持复制"):
             provider.copy_entries("token", ["101"], "88", "12")
 
+    def test_pan123_does_not_advertise_magnet_offline_download(self):
+        provider = Pan123Provider()
+        self.assertFalse(provider.supports_offline)
+        with self.assertRaisesRegex(RuntimeError, "不支持 magnet 离线下载"):
+            provider.submit_offline_task("token", "magnet:?xt=urn:btih:demo", "0")
+
     def test_tianyi_list_entries_uses_signed_web_cookie_api(self):
         provider = TianyiProvider()
         captured = {}
@@ -548,6 +576,24 @@ class MultiProviderSubscriptionTest(unittest.TestCase):
 
 
 class ResourceProviderLoadingTest(unittest.IsolatedAsyncioTestCase):
+    async def test_disabled_provider_health_refresh_does_not_probe(self):
+        provider = get_or_none("123pan")
+        cfg = {
+            "provider_enabled": {"123pan": False},
+            "123pan_username": "demo",
+            "123pan_password": "secret",
+        }
+
+        with (
+            patch("app.core.get_config", return_value=cfg),
+            patch("app.core.schedule_ui_state_push", return_value=None),
+            patch.object(provider, "probe_connectivity", side_effect=AssertionError("should not probe disabled provider")),
+        ):
+            payload = await refresh_cookie_health_status(providers=["123pan"], force=True)
+
+        self.assertEqual(payload["123pan"]["state"], "disabled")
+        self.assertFalse(payload["123pan"]["configured"])
+
     async def test_generic_quark_share_route_uses_fast_share_reader_when_paged(self):
         provider = get_or_none("quark")
         mocked_runner = AsyncMock(return_value={"entries": [], "summary": {}, "elapsed_ms": 1})

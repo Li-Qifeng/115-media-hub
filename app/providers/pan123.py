@@ -19,7 +19,7 @@ class Pan123Provider(CloudProvider):
     auth_type = "password"
     config_keys = ["123pan_username", "123pan_password"]
     supports_subscription = True
-    supports_offline = True
+    supports_offline = False
     supports_fixed_share_link = True
     supports_rename = True
     supports_move = True
@@ -395,13 +395,7 @@ class Pan123Provider(CloudProvider):
         return {"success": True, "count": len(file_ids)}
 
     def submit_offline_task(self, cookie, resource_url, folder_id="0"):
-        data = self._api_call(
-            cookie, "POST",
-            "https://www.123pan.com/a/api/offline/download",
-            json={"url": resource_url, "driveId": self.drive_id, "DriveId": self.drive_id, "dirId": self._int_or_zero(folder_id)},
-            timeout=30,
-        )
-        return {"task_id": str(data.get("data", {}).get("taskId", ""))}
+        raise RuntimeError("123云盘当前账号密码链路不支持 magnet 离线下载，请改用 115 网盘下载磁力资源")
 
     def probe_connectivity(self, cookie):
         self._api_call(cookie, "GET", "https://www.123pan.com/b/api/user/info")

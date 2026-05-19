@@ -16,7 +16,7 @@ router = APIRouter()
 async def _run_postsave_health_checks() -> None:
     try:
         await refresh_cookie_health_status(
-            providers=list(get_cookie_health_providers()),
+            providers=list(get_enabled_cookie_health_providers()),
             trigger="settings_save",
             force=True,
         )
@@ -62,7 +62,7 @@ async def save_settings_endpoint(request: Request) -> Dict[str, Any]:
     ]
     save_config(merged_cfg)
     saved_cfg = get_config()
-    for provider_name in get_cookie_health_providers():
+    for provider_name in get_enabled_cookie_health_providers(saved_cfg):
         p = _get_provider_or_none(provider_name)
         if p and p.is_configured(saved_cfg):
             mark_cookie_health_checking(provider_name, trigger="settings_save")
@@ -76,7 +76,7 @@ async def save_settings_endpoint(request: Request) -> Dict[str, Any]:
 async def get_cookies_status(request: Request) -> Dict[str, Any]:
     force = request.query_params.get("refresh") == "1"
     payload = await refresh_cookie_health_status(
-        providers=list(get_cookie_health_providers()),
+        providers=list(get_enabled_cookie_health_providers()),
         trigger="status_poll",
         force=force,
     )
@@ -87,7 +87,7 @@ async def get_cookies_status(request: Request) -> Dict[str, Any]:
 async def check_cookies_status(request: Request) -> Dict[str, Any]:
     incoming = await request.json()
     payload = incoming if isinstance(incoming, dict) else {}
-    providers = payload.get("providers", list(get_cookie_health_providers()))
+    providers = payload.get("providers", list(get_enabled_cookie_health_providers()))
     force = bool(payload.get("force", True))
     result = await refresh_cookie_health_status(
         providers=providers,

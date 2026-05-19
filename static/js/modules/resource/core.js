@@ -177,25 +177,30 @@
         }
 
         function getResourceDefaultMagnetProvider() {
+            const fromState = resourceState?.default_magnet_provider;
+            if (fromState) {
+                const normalized = String(fromState).trim().toLowerCase();
+                return normalizeResourceMagnetProviderName(normalized);
+            }
             const settingEl = document.getElementById('default_magnet_provider');
-            const rawValue = settingEl
-                ? settingEl.value
-                : (resourceState?.default_magnet_provider || '115');
+            const rawValue = settingEl ? settingEl.value : '115';
             const normalized = String(rawValue || '115').trim().toLowerCase();
-            if (normalized === 'ask') return 'ask';
             return normalizeResourceMagnetProviderName(normalized);
         }
 
         function getResourceSelectedMagnetProvider() {
-            const defaultProvider = getResourceDefaultMagnetProvider();
-            if (defaultProvider !== 'ask') return defaultProvider;
-            const selectorValue = document.getElementById('resource-magnet-provider')?.value || selectedMagnetProvider || '';
-            return normalizeResourceMagnetProviderName(selectorValue);
+            return getResourceDefaultMagnetProvider();
         }
 
-        function setResourceMagnetProviderSelection(provider) {
-            selectedMagnetProvider = normalizeResourceMagnetProviderName(provider);
-            return selectedMagnetProvider;
+        function getResourceProviderForLinkType(linkType) {
+            const normalized = String(linkType || '').trim().toLowerCase();
+            if (normalized === 'magnet') return getResourceSelectedMagnetProvider();
+            return getResourceProviderByLinkType(normalized);
+        }
+
+        function getCurrentResourceProviderLabel() {
+            const provider = getCurrentResourceProvider();
+            return provider ? getResourceProviderLabel(provider) : '下载网盘';
         }
 
         function getResourceLinkTypeLabel(linkType) {
@@ -262,6 +267,7 @@
         }
 
         function getResourceFavoriteDirs(provider = getCurrentResourceProvider()) {
+            if (!String(provider || '').trim()) return [];
             const normalizedProvider = normalizeResourceProviderName(provider, '115');
             const favoriteDirs = normalizeResourceFavoriteDirsPayload(resourceState.favorite_dirs || {});
             return favoriteDirs[normalizedProvider] || [];
@@ -273,7 +279,7 @@
             const providerEl = document.getElementById('resource-favorite-dir-provider');
             if (!panel || !list) return;
             const provider = getCurrentResourceProvider();
-            const providerLabel = getResourceProviderLabel(provider);
+            const providerLabel = getCurrentResourceProviderLabel();
             const dirs = getResourceFavoriteDirs(provider);
             const currentPath = normalizeRelativePathInput(document.getElementById('resource_job_savepath')?.value || '');
             if (providerEl) providerEl.textContent = providerLabel;
@@ -377,6 +383,7 @@
         }
 
         function isProviderCookieConfigured(provider) {
+            if (!String(provider || '').trim()) return false;
             const meta = window.providerMeta || [];
             const p = meta.find(m => m.name === normalizeResourceProviderName(provider, '115'));
             if (!p) return false;
@@ -390,14 +397,18 @@
         }
 
         function isLinkTypeCookieConfigured(linkType) {
-            return isProviderCookieConfigured(getResourceProviderByLinkType(linkType));
+            return isProviderCookieConfigured(getResourceProviderForLinkType(linkType));
         }
 
         function hasAnyResourceCookieConfigured() {
+            const enabledProviderNames = new Set(getEnabledProviders().map(p => p.name));
             if (resourceState?.provider_auth && typeof resourceState.provider_auth === 'object') {
-                return Object.values(resourceState.provider_auth).some(Boolean);
+                return Object.entries(resourceState.provider_auth)
+                    .some(([name, configured]) => enabledProviderNames.has(name) && !!configured);
             }
-            return !!resourceState?.cookie_configured || !!resourceState?.quark_cookie_configured;
+            const has115 = enabledProviderNames.has('115') && !!resourceState?.cookie_configured;
+            const hasQuark = enabledProviderNames.has('quark') && !!resourceState?.quark_cookie_configured;
+            return has115 || hasQuark;
         }
 
         function isResourceShareContentCookieHealthNoise(item) {
@@ -418,7 +429,12 @@
 
             const state = normalizeCookieHealthState(resourceState?.cookie_health || cookieHealthState || {});
             const wm = window.providerMeta || [];
-            const providerMeta = wm.length ? wm.map((p) => ({
+            const enabledMeta = wm.filter((p) => p.enabled !== false);
+            if (wm.length && !enabledMeta.length) {
+                hintEl.classList.add('hidden');
+                return;
+            }
+            const providerMeta = wm.length ? enabledMeta.map((p) => ({
                 provider: p.name,
                 label: p.label || p.name,
                 entry: normalizeCookieHealthEntry(state?.[p.name], p.name)
@@ -436,7 +452,7 @@
             let message = '';
             let tone = 'warn';
             if (!configuredAny) {
-                const labels = wm.length ? wm.map(p => p.label).join('、') : '115 或 Quark';
+                const labels = enabledMeta.length ? enabledMeta.map(p => p.label).join('、') : '115 或 Quark';
                 message = `尚未配置可用网盘认证信息。请在”参数配置”填写 ${labels} 认证信息，保存后可点击健康检查。`;
             } else if (riskyProviders.length) {
                 const hasInvalid = riskyProviders.some((item) => item.entry.state === 'invalid');
@@ -552,7 +568,7 @@
         }
 
         function getCurrentResourceProvider() {
-            return getResourceProviderByLinkType(resourceModalLinkType);
+            return getResourceProviderForLinkType(resourceModalLinkType);
         }
 
         function getResourceLinkTypeBadgeClass(linkType) {
@@ -1636,7 +1652,7 @@
                         <button type="button" data-resource-action="preview" data-resource-id="${item.id}" class="resource-card-action-secondary">详情</button>
                         <button type="button" data-resource-action="copy" data-resource-id="${item.id}" class="resource-card-action-secondary ${copyDisabled}" ${copyDisabled ? 'disabled' : ''}>${escapeHtml(getResourceCopyLabel(item))}</button>
                         <button type="button" data-resource-action="subscribe" data-resource-id="${item.id}" class="resource-card-action-subscribe">转订阅</button>
-                        <button type="button" data-resource-action="import" data-resource-id="${item.id}" class="${importClass}" ${importOpenable ? '' : 'disabled'}>导入</button>
+                        <button type="button" data-resource-action="import" data-resource-id="${item.id}" class="${importClass}" ${importOpenable ? '' : 'disabled'}>${escapeHtml(getResourceImportLabel(item))}</button>
                     </div>
                 </article>
             `;
@@ -1736,9 +1752,14 @@
             const hintEl = document.getElementById('resource_job_monitor_task_hint');
             if (!hintEl) return;
             const provider = getCurrentResourceProvider();
-            const providerLabel = getResourceProviderLabel(provider);
+            const providerLabel = getCurrentResourceProviderLabel();
             const providerMeta = (window.providerMeta || []).find(m => m.name === provider);
             const providerSupportsMonitor = !!providerMeta?.supports_monitor;
+
+            if (!provider) {
+                hintEl.innerText = '当前资源无法确定保存网盘，请重新打开导入窗口。';
+                return;
+            }
 
             const match = resolveResourceMonitorTaskMatch(savepath || document.getElementById('resource_job_savepath')?.value || '');
             if (!match.savepath) {
@@ -1766,6 +1787,16 @@
             const providerLabel = getResourceProviderLabel(provider);
             const providerMeta = (window.providerMeta || []).find(m => m.name === provider);
             const providerSupportsMonitor = !!providerMeta?.supports_monitor;
+
+            if (!provider) {
+                hiddenInput.value = '';
+                displayInput.textContent = '无法确定保存网盘';
+                delayInput.disabled = false;
+                syncResourceSavepathPreview('');
+                renderResourceImportBehaviorHint('');
+                renderResourceImportSummary();
+                return;
+            }
 
             const match = resolveResourceMonitorTaskMatch(savepath);
             syncResourceSavepathPreview(match.savepath);
@@ -1803,7 +1834,7 @@
 
         function syncResourceProviderUI() {
             const provider = getCurrentResourceProvider();
-            const providerLabel = getResourceProviderLabel(provider);
+            const providerLabel = getCurrentResourceProviderLabel();
             const savepathLabelEl = document.getElementById('resource-savepath-provider-label');
             const folderModalTitleEl = document.getElementById('resource-folder-modal-title');
             const receiveCodeLabelEl = document.getElementById('resource-share-receive-code-label');
@@ -2767,7 +2798,7 @@
         function isDirectImportInput(value) {
             const raw = String(value || '').trim();
             if (!raw) return false;
-            if (/magnet:\?xt=urn:btih:[a-z0-9]{32,40}/i.test(raw)) return true;
+            if (/magnet:\?/i.test(raw)) return true;
             if (/ed2k:\/\/[^\s<>'"]+/i.test(raw)) return true;
             if (/(?:^|[\s(（【\[])(?:https?:\/\/)?(?:115cdn|115|anxia)\.com\/s\/[a-z0-9]+(?:\?[^\s<>'"]*)?/i.test(raw)) return true;
             const links = raw.match(/https?:\/\/[^\s<>'"]+/gi) || [];
@@ -3216,12 +3247,13 @@
             getResourceCopyText,
             getResourceDisplayStatus,
             getCurrentResourceProvider,
+            getResourceProviderForLinkType,
+            getCurrentResourceProviderLabel,
             getResourceProviderLabel,
             normalizeResourceProviderName,
             getOfflineMagnetProviders,
             getResourceDefaultMagnetProvider,
             getResourceSelectedMagnetProvider,
-            setResourceMagnetProviderSelection,
             getResourceProviderByLinkType,
             getEffectiveResourceLinkType,
             isLinkTypeCookieConfigured,

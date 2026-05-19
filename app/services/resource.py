@@ -293,13 +293,20 @@ async def run_resource_job(job_id: int) -> None:
                 raise RuntimeError(f"{provider_label} 未启用")
             provider_cookie = share_provider.get_cookie(cfg)
         elif link_type == "magnet":
-            magnet_provider_name = str(
-                (job.get("extra") or {}).get("magnet_provider", "")
-                or cfg.get("default_magnet_provider", "115")
-            ).strip()
-            mp = get_provider_or_none(normalize_magnet_provider(magnet_provider_name))
-            if not mp:
-                raise RuntimeError("离线下载网盘配置无效")
+            raw_magnet_provider = str((job.get("extra") or {}).get("magnet_provider", "") or "").strip().lower()
+            if raw_magnet_provider:
+                mp = get_provider_or_none(raw_magnet_provider)
+                if not mp:
+                    raise RuntimeError("离线下载网盘配置无效")
+                if not mp.supports_offline:
+                    raise RuntimeError(f"{mp.label} 暂不支持 magnet 离线下载")
+            else:
+                magnet_provider_name = normalize_magnet_provider(cfg.get("default_magnet_provider", "115"))
+                mp = get_provider_or_none(magnet_provider_name)
+                if not mp:
+                    raise RuntimeError("离线下载网盘配置无效")
+                if not mp.supports_offline:
+                    raise RuntimeError("所选网盘不支持离线下载")
             provider_cookie = mp.get_cookie(cfg)
             provider_label = mp.label
             if not provider_cookie:
