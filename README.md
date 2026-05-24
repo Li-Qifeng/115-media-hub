@@ -50,7 +50,7 @@
 
 ## 快速开始
 
-以下示例假设你发布的镜像名为 `xianer235/115-media-hub:latest`：
+的镜像名为 `xianer235/115-media-hub:latest`：
 
 ```yaml
 services:
