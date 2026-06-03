@@ -79,6 +79,10 @@ resource_image_cache: Dict[str, Dict[str, Any]] = {}
 resource_image_cache_bytes = 0
 resource_channel_sync_submit_lock = threading.Lock()
 resource_channel_sync_submitted = False
+RESOURCE_CHANNEL_MORE_EMPTY_PAGE_SKIP_LIMIT = max(
+    0,
+    min(6, int(os.environ.get("RESOURCE_CHANNEL_MORE_EMPTY_PAGE_SKIP_LIMIT", 3) or 3)),
+)
 
 
 async def _run_resource_channel_sync(force: bool, limit_per_channel: Optional[int]) -> Dict[str, Any]:
@@ -860,6 +864,22 @@ async def load_more_resource_channel_items_endpoint(request: Request) -> Dict[st
                 )
             else:
                 page = await asyncio.to_thread(fetch_telegram_channel_posts_page, cfg, source, limit, before)
+                empty_page_hops = 0
+                while (
+                    empty_page_hops < RESOURCE_CHANNEL_MORE_EMPTY_PAGE_SKIP_LIMIT
+                    and isinstance(page, dict)
+                    and not page.get("posts")
+                    and bool(page.get("has_more"))
+                    and str(page.get("next_before", "") or "").strip()
+                ):
+                    page = await asyncio.to_thread(
+                        fetch_telegram_channel_posts_page,
+                        cfg,
+                        source,
+                        limit,
+                        extract_telegram_post_cursor(page.get("next_before", "")),
+                    )
+                    empty_page_hops += 1
         except Exception as exc:
             resource_channel_last_error[channel_id] = str(exc)
             return JSONResponse(status_code=400, content={"ok": False, "msg": str(exc)})

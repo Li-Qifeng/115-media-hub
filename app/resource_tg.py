@@ -293,6 +293,7 @@ def parse_telegram_posts_page(html: str, source: Dict[str, Any], limit: int = 10
         return {"posts": [], "next_before": "", "has_more": False, "matched_count": 0}
     normalized_limit = max(1, limit)
     start_index = max(0, len(matches) - normalized_limit)
+    page_cursor = extract_telegram_post_cursor(matches[start_index].group(1)) if start_index < len(matches) else ""
     posts: List[Dict[str, Any]] = []
     for idx in range(start_index, len(matches)):
         match = matches[idx]
@@ -348,7 +349,7 @@ def parse_telegram_posts_page(html: str, source: Dict[str, Any], limit: int = 10
         }
         posts.append(item)
     has_more = start_index > 0 or bool(TG_PREV_BEFORE_REGEX.search(html))
-    next_before = extract_telegram_post_cursor(posts[0].get("extra", {}).get("source_post_id", "")) if posts and has_more else ""
+    next_before = page_cursor if has_more and page_cursor else ""
     return {
         "posts": posts,
         "next_before": next_before,

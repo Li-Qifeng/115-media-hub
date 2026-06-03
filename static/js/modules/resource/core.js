@@ -1491,6 +1491,17 @@
             };
         }
 
+        function resetResourceChannelPagingKeys(pagingKeys, { clearLoadedItems = true } = {}) {
+            (Array.isArray(pagingKeys) ? pagingKeys : []).forEach(rawKey => {
+                const key = String(rawKey || '').trim();
+                if (!key) return;
+                if (clearLoadedItems) delete resourceChannelExtraItems[key];
+                delete resourceChannelLoadingMore[key];
+                delete resourceChannelNextBefore[key];
+                delete resourceChannelNoMore[key];
+            });
+        }
+
         function getResourceSectionItems(section, searchKeyword = '', options = {}) {
             const channelId = normalizeTelegramChannelIdInput(section?.channel_id || '');
             const pagingKey = getResourceSectionPagingKey(channelId, searchKeyword);
@@ -2001,7 +2012,7 @@
                 };
                 resourceChannelNoMore = {
                     ...resourceChannelNoMore,
-                    [pagingKey]: incomingItems.length === 0 || !String(data.next_before || '').trim()
+                    [pagingKey]: !(Boolean(data.has_more) && !!String(data.next_before || '').trim())
                 };
                 const nextSectionPool = sectionPool.map(item => {
                     if (normalizeTelegramChannelIdInput(item?.channel_id || '') !== normalizedChannelId) return item;
@@ -2539,6 +2550,11 @@
                 : (resourceState.job_pagination || {});
             const nextSearchSource = normalizeResourceSearchSource(data.search_source || resourceSearchSource || resourceState.search_source || 'tg');
             const nextProviderFilter = normalizeResourceProviderFilter(resourceProviderFilter || resourceState.provider_filter || data.provider_filter || 'all');
+            const previousChannelSectionById = new Map(
+                (Array.isArray(resourceState.channel_sections) ? resourceState.channel_sections : [])
+                    .map(section => [normalizeTelegramChannelIdInput(section?.channel_id || ''), section])
+                    .filter(([channelId]) => !!channelId)
+            );
             const currentStats = resourceState.stats && typeof resourceState.stats === 'object' ? resourceState.stats : {};
             const incomingStats = data.stats && typeof data.stats === 'object' ? data.stats : {};
             const fallbackSyncSourceCount = nextSources.filter(source => isResourceSourceSyncEnabled(source)).length;
@@ -2558,6 +2574,19 @@
                 completed_job_count: Number(incomingStats.completed_job_count ?? currentStats.completed_job_count ?? 0),
                 failed_job_count: Number(incomingStats.failed_job_count ?? currentStats.failed_job_count ?? 0),
             };
+            const feedPagingKeysToReset = [];
+            nextChannelSections.forEach(section => {
+                const channelId = normalizeTelegramChannelIdInput(section?.channel_id || '');
+                if (!channelId) return;
+                const previousSection = previousChannelSectionById.get(channelId);
+                if (!previousSection) return;
+                const previousSyncAt = Number(previousSection?.last_sync_at || 0);
+                const nextSyncAt = Number(section?.last_sync_at || 0);
+                if (nextSyncAt > 0 && nextSyncAt !== previousSyncAt) {
+                    const pagingKey = getResourceSectionPagingKey(channelId, '');
+                    if (pagingKey) feedPagingKeysToReset.push(pagingKey);
+                }
+            });
             resourceState = {
                 ...resourceState,
                 ...data,
@@ -2616,6 +2645,9 @@
                 handleResourceChannelSyncStateChange(previousChannelSync, resourceState.channel_sync, { refreshOnComplete: false });
             }
             if (!compactUpdate) {
+                if (feedPagingKeysToReset.length) {
+                    resetResourceChannelPagingKeys(feedPagingKeysToReset);
+                }
                 normalizeResourceSourceBulkSelections();
                 syncResourceChannelPagingState();
                 setResourceQuickLinks(nextQuickLinks, { render: true });
