@@ -32,6 +32,8 @@ from .db import (
     db_connection,
     ensure_db,
     ensure_parent,
+    is_sqlite_locked_error,
+    retry_sqlite_locked,
     merge_json_object,
     now_text,
     open_db,
@@ -5755,12 +5757,20 @@ def recover_resource_jobs_if_due(force: bool = False) -> Dict[str, Any]:
             return {"skipped": True}
         resource_job_recovery_last_ts = now_ts
 
-    return {
-        "skipped": False,
-        "stale": recover_stale_resource_jobs(),
-        "submitted_without_monitor": recover_submitted_resource_jobs_without_monitor(),
-        "history_pruned": prune_resource_job_history(),
-    }
+    def run_recovery() -> Dict[str, Any]:
+        return {
+            "skipped": False,
+            "stale": recover_stale_resource_jobs(),
+            "submitted_without_monitor": recover_submitted_resource_jobs_without_monitor(),
+            "history_pruned": prune_resource_job_history(),
+        }
+
+    try:
+        return retry_sqlite_locked(run_recovery)
+    except sqlite3.OperationalError as exc:
+        if force or not is_sqlite_locked_error(exc):
+            raise
+        return {"skipped": True, "reason": "database_locked"}
 
 
 def _build_resource_state_payload_snapshot(

@@ -1,8 +1,8 @@
 {
-  "version": "0.4.9",
-  "buildDate": "2026-06-03T00:00:00+08:00",
+  "version": "0.4.10",
+  "buildDate": "2026-06-29T00:00:00+08:00",
   "notes": [
-    "修复资源频道偶发误显示没有更多资源的问题"
+    "修复 NAS 环境下 SQLite 锁冲突导致容器异常重启的问题"
   ],
   "changelogUrl": "https://github.com/xianer235/115-media-hub/blob/main/CHANGELOG.md",
   "projectUrl": "https://github.com/xianer235/115-media-hub"
