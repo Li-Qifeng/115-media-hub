@@ -1697,6 +1697,34 @@ def normalize_subscription_exclude_keywords(value: Any) -> List[str]:
     return unique_preserve_order(tokens)[:50]
 
 
+SUBSCRIPTION_DEFAULT_EXCLUDE_FILE_EXTENSIONS = ["zip", "rar"]
+
+
+def normalize_subscription_exclude_file_extensions(value: Any) -> List[str]:
+    if isinstance(value, list):
+        joined = ",".join(str(item or "").strip() for item in value)
+    else:
+        joined = str(value or "")
+    tokens = []
+    for token in re.split(r"[,\n，]+", joined):
+        normalized = str(token or "").strip().lower()
+        normalized = normalized.lstrip(".").strip()
+        normalized = re.sub(r"\s+", "", normalized)
+        if not normalized:
+            continue
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_+-]{0,29}", normalized):
+            continue
+        tokens.append(normalized[:30])
+    return unique_preserve_order(tokens)[:50]
+
+
+def resolve_subscription_exclude_file_extensions(task: Dict[str, Any]) -> List[str]:
+    payload = task if isinstance(task, dict) else {}
+    if "exclude_file_extensions" in payload:
+        return normalize_subscription_exclude_file_extensions(payload.get("exclude_file_extensions", []))
+    return list(SUBSCRIPTION_DEFAULT_EXCLUDE_FILE_EXTENSIONS)
+
+
 SUBSCRIPTION_SCAN_RECOMMENDED_DEFAULTS: Dict[str, Dict[str, Any]] = {
     "115": {
         "candidate_scan_prefetch_limit": 3,
@@ -1833,6 +1861,7 @@ def normalize_subscription_task(task: Dict[str, Any]) -> Dict[str, Any]:
             task.get("exclude_words", task.get("excluded_keywords", "")),
         )
     )
+    exclude_file_extensions = resolve_subscription_exclude_file_extensions(task)
     year = str(task.get("year", "")).strip()
     if year and not re.fullmatch(r"(19|20)\d{2}", year):
         year = ""
@@ -1970,6 +1999,7 @@ def normalize_subscription_task(task: Dict[str, Any]) -> Dict[str, Any]:
         "title": title,
         "aliases": aliases,
         "exclude_keywords": exclude_keywords,
+        "exclude_file_extensions": exclude_file_extensions,
         "year": year,
         "season": max(1, season),
         "total_episodes": max(0, total_episodes),

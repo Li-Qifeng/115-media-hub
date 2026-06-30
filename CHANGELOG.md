@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file. The format 
 
 ## [Unreleased]
 
+## [0.4.11] - 2026-06-30
+- 订阅任务新增“排除文件类型”配置，新任务默认 `zip, rar`，可手动删除或追加 `exe` 等后缀；该规则只在分享文件清单精筛阶段按真实文件后缀过滤，不影响候选标题或正文排除词。
+
 ## [0.4.10] - 2026-06-29
 - 修复 NAS 环境下资源页轮询、订阅任务、文件夹监控和目录树同步并发写入 SQLite 时偶发 `database is locked` 的问题，降低容器异常重启风险。
 - 资源任务恢复、历史清理、订阅状态和频道统计写入统一增加 SQLite 锁错误退避重试，临时锁冲突不再直接打断资源状态接口。
