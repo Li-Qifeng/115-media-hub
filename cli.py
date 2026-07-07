@@ -5,18 +5,29 @@
 用法:
   115 status                            系统状态
   115 search <关键词>                    搜索资源
-  115 channels [sync]                   管理资源频道
+  115 channels sync|list                管理资源频道
   115 subscribe list                     列出订阅
   115 subscribe add <标题> [选项]         创建订阅
   115 subscribe remove <名称>            删除订阅
-  115 jobs [list|clear|clear-completed]  管理资源任务
+  115 subscribe start|stop|status|logs   订阅操作
+  115 jobs list|clear|retry              管理资源任务
   115 settings [key=value...]            查看/修改配置
+  115 logs [tail]                        查看系统日志
+  115 cookies check                      检查 Cookie 状态
+  115 sign run|status                    115 每日签到
+  115 tmdb search|popular|trending|detail TMDB 搜索
+  115 monitor list|status|start|stop     文件夹监控
+  115 tree run                           目录树同步
   115 api <method> <path> [body]         通用 API 调用
+  115 providers                          列出网盘提供商
+  115 version                            版本信息
 
 示例:
   115 status
   115 search "黑客帝国 4K"
   115 subscribe add "黑客帝国4" --quality 4K --savepath "/电影"
+  115 tmdb search "黑客帝国"
+  115 cookies check
   115 settings cookie_115="xxx"
   115 api POST /resource/channels/sync '{"force": true}'
 """
@@ -46,15 +57,13 @@ class Client:
         if self._session is not None:
             return self._session
         self._session = httpx.Client(base_url=self.base_url, timeout=30.0)
-        # Load saved cookies
         if os.path.exists(COOKIE_FILE):
             try:
                 with open(COOKIE_FILE) as f:
                     jar = json.load(f)
                     for cookie_data in jar:
                         self._session.cookies.set(
-                            cookie_data["name"],
-                            cookie_data["value"],
+                            cookie_data["name"], cookie_data["value"],
                             domain=cookie_data.get("domain", "127.0.0.1"),
                             path=cookie_data.get("path", "/"),
                         )
@@ -64,12 +73,7 @@ class Client:
 
     def _save_cookies(self):
         jar = [
-            {
-                "name": c.name,
-                "value": c.value,
-                "domain": c.domain,
-                "path": c.path,
-            }
+            {"name": c.name, "value": c.value, "domain": c.domain, "path": c.path}
             for c in self._session.cookies.jar
         ] if self._session else []
         os.makedirs(os.path.dirname(COOKIE_FILE) or ".", exist_ok=True)
@@ -78,7 +82,6 @@ class Client:
 
     def _login_if_needed(self):
         session = self._ensure_session()
-        # Quick check: try a protected endpoint
         r = session.get("/status-summary")
         if r.status_code == 401:
             r = session.post("/login", json={"username": "admin", "password": "admin123"})
@@ -111,33 +114,28 @@ class Client:
 # ── Formatters ────────────────────────────────────────────────────────────
 
 def fmt_json(data: Any) -> str:
-    """Pretty-print JSON."""
     if isinstance(data, (dict, list)):
         return json.dumps(data, ensure_ascii=False, indent=2)
     return str(data)
 
 
 def fmt_status(data: dict) -> str:
-    """Format status-summary response."""
     main = data.get("main", {})
     monitor = data.get("monitor", {})
-    subscription = data.get("subscription", {})
-
+    sub = data.get("subscription", {})
     lines = [
-        "📊 系统状态",
-        "",
+        "📊 系统状态", "",
         f"  目录树任务: {main.get('running', False) and '🟢 运行中' or '⏸ 空闲'}",
         f"  文件夹监控: {monitor.get('running', False) and '🟢 运行中' or '⏸ 空闲'}",
-        f"  订阅引擎:   {subscription.get('running', False) and '🟢 运行中' or '⏸ 空闲'}",
+        f"  订阅引擎:   {sub.get('running', False) and '🟢 运行中' or '⏸ 空闲'}",
     ]
-    next_run = main.get("next_run")
-    if next_run:
-        lines.append(f"  下次目录树: {next_run}")
+    nr = main.get("next_run")
+    if nr:
+        lines.append(f"  下次目录树: {nr}")
     return "\n".join(lines)
 
 
 def fmt_search_items(items: list, keyword: str) -> str:
-    """Format resource search results."""
     if not items:
         return f"未找到与「{keyword}」相关的资源"
     lines = [f"找到 {len(items)} 个资源：", ""]
@@ -156,7 +154,6 @@ def fmt_search_items(items: list, keyword: str) -> str:
 
 
 def fmt_subscriptions(tasks: list) -> str:
-    """Format subscription tasks."""
     if not tasks:
         return "当前没有订阅任务"
     lines = [f"共 {len(tasks)} 个订阅任务：", ""]
@@ -176,16 +173,43 @@ def fmt_subscriptions(tasks: list) -> str:
     return "\n".join(lines)
 
 
-def fmt_subscription_logs(logs: list) -> str:
-    """Format subscription logs."""
+def fmt_logs(logs: list, title: str = "日志") -> str:
     if not logs:
-        return "暂无日志"
+        return f"暂无{title}"
     lines = []
-    for log in logs[:30]:
+    for log in logs[:50]:
         text = str(log.get("text", "") or "").strip()
         level = str(log.get("level", "info") or "").strip()
         icon = {"error": "❌", "warning": "⚠️", "success": "✅", "info": "ℹ️"}.get(level, "ℹ️")
         lines.append(f"  {icon} {text}")
+    return "\n".join(lines)
+
+
+def fmt_tmdb_items(items: list) -> str:
+    if not items:
+        return "未找到结果"
+    lines = [f"共 {len(items)} 条：", ""]
+    for item in items[:20]:
+        title = str(item.get("title", "") or item.get("name", "") or "").strip()
+        year = str(item.get("release_date", "") or item.get("first_air_date", "") or "")[:4]
+        vote = item.get("vote_average", 0) or 0
+        tmdb_id = item.get("id", "?")
+        media_type = item.get("media_type", "movie")
+        lines.append(f"  • {title} ({year})  ⭐ {vote:.1f}  [{media_type}:{tmdb_id}]")
+    return "\n".join(lines)
+
+
+def fmt_providers(data: Any) -> str:
+    providers = data if isinstance(data, list) else data.get("providers", [])
+    if not providers:
+        return "未获取到提供商信息"
+    lines = []
+    for p in providers:
+        name = p.get("name", "?")
+        label = p.get("label", name)
+        enabled = "🟢" if p.get("enabled", True) else "🔴"
+        configured = "✅" if p.get("configured", p.get("cookie_configured", False)) else "❌"
+        lines.append(f"  {enabled} {label} ({name})  Cookie: {configured}")
     return "\n".join(lines)
 
 
@@ -195,6 +219,12 @@ def cmd_status(args, c: Client):
     """系统状态"""
     data = c.json("GET", "/status-summary")
     print(fmt_status(data))
+
+
+def cmd_version(args, c: Client):
+    """版本信息"""
+    data = c.json("GET", "/version")
+    print(fmt_json(data))
 
 
 def cmd_search(args, c: Client):
@@ -240,11 +270,9 @@ def cmd_subscribe(args, c: Client):
         title = " ".join(args.name) if args.name else ""
         if not title:
             sys.exit("请指定订阅名称")
-        # Check duplicate
         for t in tasks:
             if str(t.get("name", "") or "").strip() == title.strip():
                 sys.exit(f"订阅「{title}」已存在")
-
         new_task = {
             "name": title.strip(),
             "media_type": args.type,
@@ -295,22 +323,25 @@ def cmd_subscribe(args, c: Client):
     elif args.action == "logs":
         data = c.json("GET", "/subscription/logs")
         logs = data if isinstance(data, list) else data.get("logs", [])
-        print(fmt_subscription_logs(logs))
+        print(fmt_logs(logs, "订阅日志"))
 
 
 def cmd_jobs(args, c: Client):
     """管理资源任务"""
     if args.action == "list":
-        limit = args.limit
-        status = args.status or ""
-        data = c.json("GET", "/resource/jobs/state", {"limit": limit, "status": status})
+        data = c.json("GET", "/resource/jobs/state", {"limit": args.limit, "status": args.status or ""})
         print(fmt_json(data))
     elif args.action == "clear":
         data = c.json("POST", "/resource/jobs/clear")
         print(f"✅ 已清理: {json.dumps(data, ensure_ascii=False)}")
-    elif args.action == "clear_completed" or args.action == "clear-completed":
+    elif args.action in ("clear_completed", "clear-completed"):
         data = c.json("POST", "/resource/jobs/clear_completed")
         print(f"✅ 已完成任务已清理: {json.dumps(data, ensure_ascii=False)}")
+    elif args.action == "retry":
+        if not args.job_id:
+            sys.exit("请指定任务 ID")
+        data = c.json("POST", "/resource/jobs/retry", {"job_id": int(args.job_id[0])})
+        print(f"✅ 已重试: {json.dumps(data, ensure_ascii=False)}")
 
 
 def cmd_settings(args, c: Client):
@@ -318,7 +349,6 @@ def cmd_settings(args, c: Client):
     cfg = c.json("GET", "/get_settings")
 
     if not args.kv:
-        # Print relevant settings
         keys = [
             "cookie_115", "cookie_quark", "pansou_base_url",
             "tg_proxy_enabled", "tg_proxy_host", "tg_proxy_port",
@@ -332,23 +362,22 @@ def cmd_settings(args, c: Client):
             val = cfg.get(key)
             if val is None:
                 continue
-            displayed = str(val)
             if "cookie" in key.lower() or "password" in key.lower() or "secret" in key.lower() or "token" in key.lower():
                 displayed = (str(val)[:8] + "..." + str(val)[-4:]) if len(str(val)) > 16 else ("***" if str(val).strip() else "(空)")
             elif isinstance(val, list):
                 displayed = f"[{len(val)} 项]" if val else "[]"
             elif isinstance(val, dict):
                 displayed = f"{{{len(val)} 字段}}"
+            else:
+                displayed = str(val)
             print(f"  {key}: {displayed}")
     else:
-        # Update settings
         for kv in args.kv:
             if "=" not in kv:
                 print(f"⚠️ 跳过无效格式: {kv} (需要 key=value)")
                 continue
             key, val = kv.split("=", 1)
             key = key.strip()
-            # Try to preserve type
             existing = cfg.get(key)
             if isinstance(existing, bool):
                 cfg[key] = val.lower() in ("true", "1", "yes")
@@ -370,9 +399,133 @@ def cmd_settings(args, c: Client):
             else:
                 cfg[key] = val
             print(f"  ✅ {key} = {cfg[key]}")
-
         c.json("POST", "/save_settings", cfg)
         print("✅ 配置已保存")
+
+
+def cmd_logs(args, c: Client):
+    """查看系统日志"""
+    data = c.json("GET", "/logs")
+    logs = data if isinstance(data, list) else data.get("logs", [])
+    if args.tail:
+        logs = logs[-int(args.tail):]
+    print(fmt_logs(logs, "系统日志"))
+
+
+def cmd_cookies(args, c: Client):
+    """检查 Cookie 状态"""
+    if args.action == "check":
+        data = c.json("POST", "/settings/cookies/check")
+        print(fmt_json(data))
+    elif args.action == "status":
+        data = c.json("GET", "/settings/cookies/status")
+        print(fmt_json(data))
+
+
+def cmd_sign(args, c: Client):
+    """115 每日签到"""
+    if args.action == "run":
+        data = c.json("POST", "/settings/115/sign/run")
+        print(f"✅ 签到结果: {json.dumps(data, ensure_ascii=False)}")
+    elif args.action == "status":
+        data = c.json("GET", "/settings/115/sign/status")
+        print(fmt_json(data))
+
+
+def cmd_tmdb(args, c: Client):
+    """TMDB 搜索"""
+    if args.action == "search":
+        keyword = " ".join(args.keyword) if args.keyword else ""
+        if not keyword:
+            sys.exit("请指定搜索关键词")
+        data = c.json("GET", "/tmdb/search", {"query": keyword, "page": args.page or 1})
+        items = data if isinstance(data, list) else data.get("results", data.get("items", []))
+        print(fmt_tmdb_items(items))
+
+    elif args.action == "popular":
+        data = c.json("GET", "/tmdb/popular", {"page": args.page or 1})
+        items = data if isinstance(data, list) else data.get("results", data.get("items", []))
+        print(fmt_tmdb_items(items))
+
+    elif args.action == "trending":
+        data = c.json("GET", "/tmdb/trending", {"page": args.page or 1})
+        items = data if isinstance(data, list) else data.get("results", data.get("items", []))
+        print(fmt_tmdb_items(items))
+
+    elif args.action == "detail":
+        if not args.tmdb_id:
+            sys.exit("请指定 TMDB ID")
+        data = c.json("GET", "/tmdb/detail", {"tmdb_id": int(args.tmdb_id[0])})
+        print(fmt_json(data))
+
+    elif args.action == "genres":
+        data = c.json("GET", "/tmdb/genres")
+        print(fmt_json(data))
+
+    elif args.action == "discover":
+        data = c.json("GET", "/tmdb/discover", {"page": args.page or 1})
+        items = data if isinstance(data, list) else data.get("results", data.get("items", []))
+        print(fmt_tmdb_items(items))
+
+
+def cmd_monitor(args, c: Client):
+    """文件夹监控管理"""
+    if args.action == "list":
+        cfg = c.json("GET", "/get_settings")
+        tasks = cfg.get("monitor_tasks", [])
+        if not tasks:
+            print("未配置文件夹监控任务")
+            return
+        print(f"共 {len(tasks)} 个监控任务：")
+        for t in tasks:
+            name = str(t.get("name", "") or "").strip()
+            path = str(t.get("scan_path", "") or "").strip()
+            cron = t.get("cron_minutes", 0)
+            enabled = "🟢" if t.get("enabled", True) else "🔴"
+            print(f"  {enabled} {name}  (扫描: {path}, 周期: {cron}分钟)")
+
+    elif args.action == "status":
+        data = c.json("GET", "/monitor/status")
+        running = data.get("running", False)
+        current = data.get("current_task", "") or ""
+        queued = data.get("queued", [])
+        print(f"  运行中: {'🟢 是' if running else '⏸ 否'}")
+        if current:
+            print(f"  当前任务: {current}")
+        if queued:
+            print(f"  排队中: {', '.join(queued)}")
+
+    elif args.action == "start":
+        data = c.json("POST", "/monitor/start")
+        print(f"✅ 监控已启动: {json.dumps(data, ensure_ascii=False)}")
+
+    elif args.action == "stop":
+        data = c.json("POST", "/monitor/stop")
+        print(f"✅ 监控已停止: {json.dumps(data, ensure_ascii=False)}")
+
+    elif args.action == "logs":
+        data = c.json("GET", "/monitor/logs/tasks")
+        print(fmt_json(data))
+
+
+def cmd_tree(args, c: Client):
+    """目录树同步"""
+    if args.action == "run":
+        data = c.json("POST", "/start")
+        print(f"✅ 目录树同步已触发: {json.dumps(data, ensure_ascii=False)}")
+    elif args.action == "status":
+        data = c.json("GET", "/status-summary")
+        main = data.get("main", {})
+        running = main.get("running", False)
+        progress = main.get("progress", {})
+        print(f"  运行中: {'🟢 是' if running else '⏸ 否'}")
+        if progress:
+            step = progress.get("step", "") or ""
+            detail = progress.get("detail", "") or ""
+            pct = progress.get("percent", 0) or 0
+            print(f"  步骤: {step}  ({pct}%)")
+            if detail:
+                print(f"  详情: {detail}")
 
 
 def cmd_api(args, c: Client):
@@ -397,16 +550,7 @@ def cmd_api(args, c: Client):
 def cmd_providers(args, c: Client):
     """列出提供商"""
     data = c.json("GET", "/api/providers")
-    providers = data if isinstance(data, list) else data.get("providers", [])
-    if not providers:
-        print("未获取到提供商信息")
-        return
-    for p in providers:
-        name = p.get("name", "?")
-        label = p.get("label", name)
-        enabled = "🟢" if p.get("enabled", True) else "🔴"
-        configured = "✅" if p.get("configured", p.get("cookie_configured", False)) else "❌"
-        print(f"  {enabled} {label} ({name})  Cookie: {configured}")
+    print(fmt_providers(data))
 
 
 # ── Main CLI ──────────────────────────────────────────────────────────────
@@ -423,6 +567,9 @@ def _build_parser() -> argparse.ArgumentParser:
     # status
     sp.add_parser("status", help="系统状态")
 
+    # version
+    sp.add_parser("version", help="版本信息")
+
     # search
     sp_search = sp.add_parser("search", help="搜索资源")
     sp_search.add_argument("keyword", nargs="+", help="搜索关键词")
@@ -436,7 +583,6 @@ def _build_parser() -> argparse.ArgumentParser:
     sp_sub = sp.add_parser("subscribe", help="管理订阅")
     sp_sub.add_argument("action", choices=["list", "add", "remove", "start", "stop", "status", "logs"])
     sp_sub.add_argument("name", nargs="*", help="订阅名称 (add/remove/start)")
-    sp_sub.add_argument("--title", nargs="+", help="订阅标题 (add)")
     sp_sub.add_argument("--type", default="movie", choices=["movie", "tv"], help="媒体类型")
     sp_sub.add_argument("--quality", default="balanced", help="质量偏好 (4K/1080p/720p/balanced)")
     sp_sub.add_argument("--savepath", default="/电影", help="115 保存路径")
@@ -444,13 +590,41 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # jobs
     sp_jobs = sp.add_parser("jobs", help="管理资源任务")
-    sp_jobs.add_argument("action", choices=["list", "clear", "clear_completed", "clear-completed"])
+    sp_jobs.add_argument("action", choices=["list", "clear", "clear_completed", "clear-completed", "retry"])
+    sp_jobs.add_argument("job_id", nargs="*", help="任务 ID (retry)")
     sp_jobs.add_argument("--limit", type=int, default=20, help="列表条数")
     sp_jobs.add_argument("--status", default="", help="过滤状态 (pending/submitted/completed/failed)")
 
     # settings
     sp_set = sp.add_parser("settings", help="查看/修改配置")
     sp_set.add_argument("kv", nargs="*", help='key=value (例如 cookie_115="xxx")')
+
+    # logs
+    sp_logs = sp.add_parser("logs", help="查看系统日志")
+    sp_logs.add_argument("tail", nargs="?", type=int, default=0, help="只显示最后 N 条")
+
+    # cookies
+    sp_cookies = sp.add_parser("cookies", help="检查 Cookie 状态")
+    sp_cookies.add_argument("action", choices=["check", "status"], help="check=检测, status=查看缓存状态")
+
+    # sign
+    sp_sign = sp.add_parser("sign", help="115 每日签到")
+    sp_sign.add_argument("action", choices=["run", "status"])
+
+    # tmdb
+    sp_tmdb = sp.add_parser("tmdb", help="TMDB 搜索")
+    sp_tmdb.add_argument("action", choices=["search", "popular", "trending", "detail", "genres", "discover"])
+    sp_tmdb.add_argument("keyword", nargs="*", help="搜索关键词 (search)")
+    sp_tmdb.add_argument("tmdb_id", nargs="*", help="TMDB ID (detail)")
+    sp_tmdb.add_argument("--page", type=int, default=1, help="页码")
+
+    # monitor
+    sp_mon = sp.add_parser("monitor", help="文件夹监控管理")
+    sp_mon.add_argument("action", choices=["list", "status", "start", "stop", "logs"])
+
+    # tree
+    sp_tree = sp.add_parser("tree", help="目录树同步")
+    sp_tree.add_argument("action", choices=["run", "status"])
 
     # api
     sp_api = sp.add_parser("api", help="通用 API 调用")
@@ -476,11 +650,18 @@ def main():
 
     dispatch = {
         "status": cmd_status,
+        "version": cmd_version,
         "search": cmd_search,
         "channels": cmd_channels,
         "subscribe": cmd_subscribe,
         "jobs": cmd_jobs,
         "settings": cmd_settings,
+        "logs": cmd_logs,
+        "cookies": cmd_cookies,
+        "sign": cmd_sign,
+        "tmdb": cmd_tmdb,
+        "monitor": cmd_monitor,
+        "tree": cmd_tree,
         "api": cmd_api,
         "providers": cmd_providers,
     }
