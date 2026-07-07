@@ -1,0 +1,15 @@
+#!/usr/bin/env python3
+"""
+115 — 115 Media Hub CLI 入口
+
+安装:
+  ln -sf /vol1/1000/Code/115-media-hub/115 /usr/local/bin/115
+"""
+import sys
+import os
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from cli import main
+
+main()
