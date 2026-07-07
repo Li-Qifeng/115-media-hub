@@ -579,123 +579,26 @@ services:
 
 ## 九、二次开发计划
 
-### 9.1 需要新增的功能
+### 9.1 CLI 工具（已完成）
+
+| 子命令 | 功能 | 文件 |
+|--------|------|------|
+| `115 status` | 系统状态 | `cli.py` |
+| `115 search` | 搜索资源 | `cli.py` |
+| `115 channels` | 管理频道 | `cli.py` |
+| `115 subscribe` | 管理订阅 | `cli.py` |
+| `115 jobs` | 管理任务 | `cli.py` |
+| `115 settings` | 查看/修改配置 | `cli.py` |
+| `115 api` | 通用 API 调用（兜底） | `cli.py` |
+| `115 providers` | 列出提供商 | `cli.py` |
+
+### 9.2 下一步
 
 | 优先级 | 功能 | 实现方式 | 预估工作量 |
 |--------|------|---------|-----------|
-| P0 | **MCP Server** | 新增 `app/mcp_server.py`, 用 FastMCP 暴露工具 | ~0.5天 |
 | P0 | **DiscoveryProvider 接口** | 新增 `app/providers/discovery_base.py`, 重构 TG/PanSou 为 Provider | ~1天 |
-| P1 | **MCP 工具: discover_media** | 封装资源搜索+PanSou+TG 为 MCP 工具 | ~0.5天 |
-| P1 | **MCP 工具: subscribe_media** | 封装订阅管理 | ~0.5天 |
-| P1 | **MCP 工具: transfer_media** | 封装转存+Webhook | ~0.5天 |
-| P2 | **自定义 Provider 示例** | 在 `app/providers/custom/` 下提供示例模板 | ~0.5天 |
-| P2 | **MCP tool: get_status** | 系统状态查询 | ~0.5天 |
-
-### 9.2 MCP Server 实现方案
-
-用 FastMCP (Python SDK, `modelcontextprotocol/python-sdk`)：
-
-```python
-# app/mcp_server.py
-from mcp.server.fastmcp import FastMCP
-
-mcp = FastMCP("115-media-hub")
-
-@mcp.tool(description="搜索媒体资源，支持 TG 频道和 PanSou 多渠道")
-async def discover_media(
-    title: str = Field(description="片名"),
-    year: int = Field(default=None, description="年份"),
-    quality: str = Field(default="4K", description="画质偏好"),
-    provider: str = Field(default="115", description="网盘提供商")
-) -> str:
-    """
-    1. 调用 core 中的 resource_search 函数
-    2. 聚合 TG + PanSou 结果
-    3. 返回格式化结果
-    """
-    ...
-
-@mcp.tool(description="订阅媒体，自动追更")
-async def subscribe_media(
-    title: str, media_type: str = "movie",
-    quality: str = "4K", savepath: str = "/电影"
-) -> str:
-    """调用 subscription 模块创建订阅任务"""
-    ...
-
-@mcp.resource(uri="media://subscriptions", description="当前订阅列表")
-def get_subscriptions() -> str:
-    """返回当前所有订阅任务及其状态"""
-    ...
-
-@mcp.prompt()
-def media_assistant() -> str:
-    """预置提示词，指导 AI 如何使用媒体工具"""
-    return "你是一个媒体助手..."
-```
-
-**集成方式:**
-- AI Agent 通过 stdio 启动 `python -m app.mcp_server`
-- 或者嵌入 FastAPI: 在 `startup()` 中启动 MCP 子进程
-- 与原有 Web 管理后台共享配置和数据库
-
-### 9.3 DiscoveryProvider 接口设计
-
-```python
-# app/providers/discovery_base.py
-from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from typing import List, Optional
-
-@dataclass
-class DiscoveryResult:
-    title: str
-    link_url: str
-    link_type: str  # 115share / magnet / quark / ...
-    quality: str = ""
-    year: str = ""
-    source_name: str = ""
-    extra: dict = field(default_factory=dict)
-
-class DiscoveryProvider(ABC):
-    name: str = ""
-    label: str = ""
-
-    @abstractmethod
-    def search(self, keyword: str, **kwargs) -> List[DiscoveryResult]:
-        """搜索资源，返回候选列表"""
-        ...
-
-    def validate(self) -> bool:
-        """检测配置是否有效"""
-        return True
-
-    def config_fields(self) -> List[dict]:
-        """返回配置表单字段定义，用于 Web UI 动态渲染"""
-        return []
-```
-
-然后重构现有的 TG 搜索和 PanSou 搜索为 DiscoveryProvider 实现，并允许用户注册自定义 Provider:
-
-```python
-# app/providers/discovery_registry.py
-_discovery_providers: Dict[str, DiscoveryProvider] = {}
-
-def register_discovery(provider: DiscoveryProvider):
-    _discovery_providers[provider.name] = provider
-
-def search_all(keyword: str, **kwargs) -> List[DiscoveryResult]:
-    """轮询所有已注册 Provider"""
-    results = []
-    for p in _discovery_providers.values():
-        try:
-            results.extend(p.search(keyword, **kwargs))
-        except Exception as e:
-            log.error(f"{p.name} search failed: {e}")
-    return results
-```
-
----
+| P1 | **自定义 Provider 示例** | 在 `app/providers/custom/` 下提供示例模板 | ~0.5天 |
+| P2 | **CLI 扩展** | 按需添加更多子命令 | 持续 |
 
 ## 十、开发注意事项
 
