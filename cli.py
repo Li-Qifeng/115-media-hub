@@ -31,6 +31,9 @@
   115 providers                          列出网盘提供商
   115 sources list|search|test          发现源管理
   115 version                            版本信息
+  115 health                             全链路健康检查
+  115 stats                              统计摘要
+  115 daemon status|logs|restart         容器管理
 
 示例:
   115 status
@@ -1188,6 +1191,178 @@ def cmd_resource(args, c: Client):
         print(f"✅ 已删除: {json.dumps(data, ensure_ascii=False)}")
 
 
+# ── Phase 6: Ops ──────────────────────────────────────────────────────────
+
+def cmd_health(args, c: Client):
+    """全链路健康检查"""
+    print("🏥 115 Media Hub 健康检查")
+    print()
+
+    # 1. Version
+    try:
+        ver = c.json("GET", "/version")
+        v = ver.get("version", ver.get("app_version", "?"))
+        print(f"  版本: {v}")
+    except Exception as e:
+        print(f"  ❌ 版本: 获取失败 ({e})")
+
+    # 2. Status summary
+    try:
+        status = c.json("GET", "/status-summary")
+        main = status.get("main", {})
+        mon = status.get("monitor", {})
+        sub = status.get("subscription", {})
+        print(f"  目录树任务: {'🟢 运行中' if main.get('running') else '⏸ 空闲'}")
+        print(f"  文件夹监控: {'🟢 运行中' if mon.get('running') else '⏸ 空闲'}")
+        print(f"  订阅引擎:   {'🟢 运行中' if sub.get('running') else '⏸ 空闲'}")
+    except Exception as e:
+        print(f"  ❌ 状态: 获取失败 ({e})")
+
+    # 3. Cookie health
+    try:
+        health = c.json("POST", "/settings/cookies/check", {})
+        ch = health.get("cookie_health", health)
+        for provider, info in ch.items() if isinstance(ch, dict) else []:
+            state = info.get("state", "unknown")
+            msg = info.get("message", "")
+            icon = "✅" if state == "valid" else ("⚠️" if state == "missing" else "❌")
+            print(f"  {icon} {provider}: {msg}")
+    except Exception as e:
+        print(f"  ❌ Cookie: 检测失败 ({e})")
+
+    # 4. TG connectivity
+    try:
+        tg = c.json("POST", "/settings/tg_proxy/test", {})
+        ok = tg.get("ok", False)
+        latency = tg.get("latency_ms", 0)
+        mode = tg.get("mode", "?")
+        print(f"  {'🟢' if ok else '❌'} TG 连通: {mode} 模式, {latency}ms")
+    except Exception as e:
+        print(f"  ❌ TG: 连接失败 ({e})")
+
+    # 5. Resource stats
+    try:
+        state = c.json("GET", "/resource/state", {"compact": "1"})
+        stats = state.get("stats", {})
+        setup = state.get("setup_status", {})
+        print(f"  📦 资源数: {stats.get('item_count', 0)}  |  频道: {stats.get('source_count', 0)}  |  任务: {stats.get('total_job_count', 0)}")
+        print(f"  🔧 配置状态: Cookie={'✅' if setup.get('cookie_configured') else '❌'}  资源={'✅' if setup.get('has_sources') else '❌'}  STRM={'✅' if setup.get('strm_ready') else '❌'}")
+    except Exception as e:
+        print(f"  ❌ 资源: 获取失败 ({e})")
+
+    # 6. Docker
+    try:
+        r = subprocess.run(
+            ["docker", "ps", "--filter", "name=115-media-hub", "--format", "{{.Status}}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        dkr = r.stdout.strip()
+        print(f"  🐳 容器: {'🟢 ' + dkr if dkr else '❌ 未运行'}")
+    except Exception as e:
+        print(f"  ❌ Docker: {e}")
+
+
+def cmd_stats(args, c: Client):
+    """统计摘要"""
+    try:
+        state = c.json("GET", "/resource/state", {"compact": "1"})
+    except Exception as e:
+        sys.exit(f"获取状态失败: {e}")
+
+    stats = state.get("stats", {})
+    setup = state.get("setup_status", {})
+    job_counts = state.get("job_counts", {})
+    sections = state.get("channel_sections", [])
+
+    # 计算各频道资源数
+    total_items = 0
+    channel_items = {}
+    for sec in sections:
+        count = sec.get("item_count", 0) or 0
+        total_items += count
+        if count > 0:
+            channel_items[sec.get("name", sec.get("channel_id", "?"))] = count
+
+    print("📊 统计摘要")
+    print()
+    print(f"  资源频道: {stats.get('source_count', 0)} 个")
+    print(f"  资源条目: {stats.get('item_count', 0)} 条 (频道内 {total_items} 条)")
+    print(f"  活跃频道: {len(channel_items)} 个")
+    print()
+    print("  任务统计:")
+    print(f"    总计: {job_counts.get('total', 0)}")
+    print(f"    运行中: {job_counts.get('running', 0)}")
+    print(f"    已完成: {job_counts.get('completed', 0)}")
+    print(f"    失败: {job_counts.get('failed', 0)}")
+    print()
+
+    # 按频道来源分类
+    link_types: dict = {}
+    for sec in sections:
+        ltc = sec.get("link_type_counts", {})
+        for lt, cnt in ltc.items():
+            link_types[lt] = link_types.get(lt, 0) + cnt
+    if link_types:
+        print("  资源类型分布:")
+        for lt, cnt in sorted(link_types.items(), key=lambda x: -x[1]):
+            print(f"    {lt}: {cnt} 条")
+
+    if channel_items:
+        top = sorted(channel_items.items(), key=lambda x: -x[1])[:10]
+        print()
+        print("  资源最多的频道 (Top 10):")
+        for name, cnt in top:
+            print(f"    {name}: {cnt} 条")
+
+
+def cmd_daemon(args, c: Client):
+    """容器管理"""
+    container = os.environ.get("MH_CONTAINER", "115-media-hub")
+
+    if args.action == "status":
+        r = subprocess.run(
+            ["docker", "ps", "-a", "--filter", f"name={container}",
+             "--format", "table {{.ID}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        out = r.stdout.strip()
+        if out:
+            print(out)
+        else:
+            print(f"容器 {container} 未找到")
+
+    elif args.action == "logs":
+        tail = args.tail or 50
+        r = subprocess.run(
+            ["docker", "logs", container, "--tail", str(tail)],
+            capture_output=True, text=True, timeout=5,
+        )
+        if r.stdout:
+            print(r.stdout.strip())
+        if r.stderr:
+            print(r.stderr.strip()[:1000])
+
+    elif args.action == "restart":
+        print(f"🔄 重启容器 {container}...")
+        r = subprocess.run(["docker", "restart", container], capture_output=True, text=True, timeout=30)
+        if r.returncode == 0:
+            print("✅ 容器已重启")
+        else:
+            print(f"❌ 重启失败: {r.stderr.strip()}")
+        # 等待服务就绪
+        import time
+        for i in range(15):
+            time.sleep(2)
+            try:
+                c = Client()
+                c.json("GET", "/status-summary")
+                print(f"✅ 服务已就绪 (等待 {2*(i+1)}s)")
+                return
+            except Exception:
+                continue
+        print("⚠️ 容器已重启但服务未响应")
+
+
 # ── Main CLI ──────────────────────────────────────────────────────────────
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -1341,6 +1516,17 @@ def _build_parser() -> argparse.ArgumentParser:
     sp_rsrc.add_argument("--url", default="", help="链接 URL (quick-links add)")
     sp_rsrc.add_argument("--yes", action="store_true", help="跳过确认 (delete)")
 
+    # health
+    sp.add_parser("health", help="全链路健康检查")
+
+    # stats
+    sp.add_parser("stats", help="统计摘要")
+
+    # daemon
+    sp_daemon = sp.add_parser("daemon", help="容器管理")
+    sp_daemon.add_argument("action", choices=["status", "logs", "restart"])
+    sp_daemon.add_argument("tail", nargs="?", type=int, default=0, help="日志行数 (logs)")
+
     return p
 
 
@@ -1377,6 +1563,9 @@ def main():
         "watchlist": cmd_watchlist,
         "strm": cmd_strm,
         "resource": cmd_resource,
+        "health": cmd_health,
+        "stats": cmd_stats,
+        "daemon": cmd_daemon,
     }
 
     handler = dispatch.get(args.command)
