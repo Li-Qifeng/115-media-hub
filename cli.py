@@ -35,6 +35,7 @@
 import argparse
 import json
 import os
+import subprocess
 import sys
 from typing import Any, Dict, Optional
 
@@ -528,6 +529,112 @@ def cmd_tree(args, c: Client):
                 print(f"  详情: {detail}")
 
 
+def cmd_sources(args, c: Client):
+    """管理发现源 (DiscoveryProvider)，通过容器内 Python 执行"""
+    container = os.environ.get("MH_CONTAINER", "115-media-hub")
+
+    if args.action == "list":
+        code = """
+from app.providers.discovery_registry import list_discovery_providers
+providers = list_discovery_providers()
+if not providers:
+    print("未注册任何发现源")
+else:
+    print(f"共 {len(providers)} 个发现源：")
+    print()
+    for p in providers:
+        ok = "✅" if p.validate() else "❌"
+        print(f"  {ok} {p.label} ({p.name})")
+"""
+        r = subprocess.run(
+            ["docker", "exec", "-i", container, "python3", "-c", code],
+            capture_output=True, text=True, timeout=30,
+        )
+        if r.returncode == 0:
+            print(r.stdout.strip())
+        else:
+            print(r.stderr.strip() or f"执行失败 (exit {r.returncode})")
+
+    elif args.action == "search":
+        keyword = " ".join(args.keyword) if args.keyword else ""
+        if not keyword:
+            sys.exit("请指定搜索关键词")
+        import shlex
+        safe_kw = shlex.quote(keyword)
+        code = f"""
+from app.providers.discovery_registry import search_all
+result = search_all({safe_kw}, limit=10)
+items = result.get("results", [])
+errors = result.get("errors", [])
+stats = result.get("stats", {{}})
+import json
+all_items = [dict(title=i.title, link_url=i.link_url, link_type=i.link_type, quality=i.quality, source_name=i.source_name) for i in items]
+print(json.dumps(dict(items=all_items, stats=stats, errors=errors), ensure_ascii=False))
+"""
+        r = subprocess.run(
+            ["docker", "exec", "-i", container, "python3", "-c", code],
+            capture_output=True, text=True, timeout=60,
+        )
+        if r.returncode != 0:
+            print(r.stderr.strip() or f"执行失败 (exit {r.returncode})")
+            return
+
+        try:
+            data = json.loads(r.stdout.strip())
+        except json.JSONDecodeError:
+            print(r.stdout.strip()[:1000])
+            return
+
+        items = data.get("items", [])
+        if not items:
+            print(f"未找到与「{keyword}」相关的资源")
+            return
+
+        print(f"找到 {len(items)} 个资源：")
+        print()
+        for item in items:
+            print(f"  • {item.get('title', '')}")
+            info = []
+            if item.get("quality"):
+                info.append(f"质量: {item['quality']}")
+            if item.get("source_name"):
+                info.append(f"来源: {item['source_name']}")
+            if item.get("link_type"):
+                info.append(f"类型: {item['link_type']}")
+            if item.get("link_url"):
+                info.append(f"链接: {item['link_url'][:80]}")
+            if info:
+                print(f"    {'  |  '.join(info)}")
+            print()
+        print(f"  来源统计: {data.get('stats', {}).get('by_provider', {})}")
+
+    elif args.action == "test":
+        name = args.name or ""
+        if not name:
+            sys.exit("请指定 Provider 名称（使用 --name 参数）")
+        code = (
+            "from app.providers.discovery_registry import get_discovery_provider\n"
+            f"p = get_discovery_provider({name!r})\n"
+            "if not p:\n"
+            '    print(f"NOT_FOUND: {name}")\n'
+            "else:\n"
+            "    ok = p.validate()\n"
+            '    print("OK" if ok else "FAIL")\n'
+            "    print(p.label)\n"
+        )
+        r = subprocess.run(
+            ["docker", "exec", "-i", container, "python3", "-c", code],
+            capture_output=True, text=True, timeout=30,
+        )
+        lines = r.stdout.strip().split("\n")
+        if r.returncode != 0 or "NOT_FOUND" in (lines[0] if lines else ""):
+            print(f"❌ 未找到 Provider: {name}")
+        elif lines[0] == "OK":
+            print(f"✅ {lines[1] if len(lines) > 1 else name}: 配置有效")
+        else:
+            print(f"❌ {lines[1] if len(lines) > 1 else name}: 配置无效")
+
+
 def cmd_api(args, c: Client):
     """通用 API 调用"""
     method = args.method.upper()
@@ -618,6 +725,12 @@ def _build_parser() -> argparse.ArgumentParser:
     sp_tmdb.add_argument("tmdb_id", nargs="*", help="TMDB ID (detail)")
     sp_tmdb.add_argument("--page", type=int, default=1, help="页码")
 
+    # sources (DiscoveryProvider)
+    sp_src = sp.add_parser("sources", help="管理发现源 (DiscoveryProvider)")
+    sp_src.add_argument("action", choices=["list", "search", "test"])
+    sp_src.add_argument("keyword", nargs="*", help="搜索关键词 (search)")
+    sp_src.add_argument("--name", help="Provider 名称 (test)")
+
     # monitor
     sp_mon = sp.add_parser("monitor", help="文件夹监控管理")
     sp_mon.add_argument("action", choices=["list", "status", "start", "stop", "logs"])
@@ -660,6 +773,7 @@ def main():
         "cookies": cmd_cookies,
         "sign": cmd_sign,
         "tmdb": cmd_tmdb,
+        "sources": cmd_sources,
         "monitor": cmd_monitor,
         "tree": cmd_tree,
         "api": cmd_api,
