@@ -18,8 +18,14 @@
   115 tmdb search|popular|trending|detail TMDB 搜索
   115 monitor list|status|start|stop     文件夹监控
   115 tree run                           目录树同步
+  115 browse ls|tree                     网盘浏览
+  115 share preview|receive              分享管理
+  115 scrape identify|rename-plan|diff   刮削管理
+  115 watchlist list|add|remove|update   推荐清单
+  115 strm orphans|cleanup|dirs          STRM 管理
   115 api <method> <path> [body]         通用 API 调用
   115 providers                          列出网盘提供商
+  115 sources list|search|test           发现源管理
   115 version                            版本信息
 
 示例:
@@ -27,7 +33,9 @@
   115 search "黑客帝国 4K"
   115 subscribe add "黑客帝国4" --quality 4K --savepath "/电影"
   115 tmdb search "黑客帝国"
-  115 cookies check
+  115 browse ls --provider 115 --cid 0
+  115 share preview "https://115.com/s/swxxxx"
+  115 scrape identify "/电影/黑客帝国4.mkv"
   115 settings cookie_115="xxx"
   115 api POST /resource/channels/sync '{"force": true}'
 """
@@ -660,6 +668,234 @@ def cmd_providers(args, c: Client):
     print(fmt_providers(data))
 
 
+# ── Phase 3: browse ───────────────────────────────────────────────────────
+
+def cmd_browse(args, c: Client):
+    """网盘浏览"""
+    provider = args.provider or "115"
+    cid = args.cid or "0"
+    if args.action == "ls":
+        data = c.json("GET", "/resource/browse", {"provider_name": provider, "cid": cid})
+        entries = data if isinstance(data, list) else data.get("entries", data.get("items", []))
+        if not entries:
+            print("(空目录)")
+            return
+        print(f"📁 {provider} 目录 (cid={cid})")
+        print()
+        for e in entries:
+            name = str(e.get("name", "") or "").strip()
+            is_dir = bool(e.get("is_dir", e.get("is_directory", e.get("type", "") == "folder")))
+            icon = "📁" if is_dir else "📄"
+            file_id = e.get("file_id", e.get("id", e.get("cid", "")))
+            size = str(e.get("size", "") or "").strip()
+            print(f"  {icon} {name}  (id={file_id})" + (f"  {size}" if size else ""))
+
+    elif args.action == "tree":
+        data = c.json("GET", "/resource/browse", {"provider_name": provider, "cid": cid, "folders_only": "1"})
+        entries = data if isinstance(data, list) else data.get("entries", data.get("items", []))
+        if not entries:
+            print("(空目录)")
+            return
+        _print_tree(entries, provider, c, prefix="")
+
+
+def _print_tree(entries: list, provider: str, c: Client, prefix: str = "", depth: int = 0):
+    if depth > 3:
+        print(f"{prefix}  ...")
+        return
+    for i, e in enumerate(entries):
+        name = str(e.get("name", "") or "").strip()
+        file_id = e.get("file_id", e.get("id", e.get("cid", "")))
+        is_last = i == len(entries) - 1
+        connector = "└── " if is_last else "├── "
+        print(f"{prefix}{connector}{name}  (id={file_id})")
+        if depth < 3:
+            sub = c.json("GET", "/resource/browse", {"provider_name": provider, "cid": file_id, "folders_only": "1"})
+            sub_items = sub if isinstance(sub, list) else sub.get("entries", sub.get("items", []))
+            if sub_items:
+                sub_prefix = prefix + ("    " if is_last else "│   ")
+                _print_tree(sub_items, provider, c, sub_prefix, depth + 1)
+
+
+# ── Phase 3: share ────────────────────────────────────────────────────────
+
+def cmd_share(args, c: Client):
+    """分享管理"""
+    if args.action == "preview":
+        url = args.url or ""
+        if not url:
+            sys.exit("请指定分享链接")
+        provider = args.provider or "115"
+        code = args.code or ""
+        cid = args.cid or ""
+        params = {"link_url": url, "receive_code": code, "cid": cid}
+        try:
+            data = c.json("GET", f"/resource/browse/{provider}/share_entries", params)
+        except SystemExit:
+            # Try direct share endpoint
+            data = c.json("GET", f"/resource/{provider}/share_entries", params)
+        entries = data if isinstance(data, list) else data.get("entries", data.get("items", []))
+        summary = data.get("summary", {}) if isinstance(data, dict) else {}
+        print(f"📦 分享内容 ({url[:60]})")
+        if summary:
+            print(f"   文件夹: {summary.get('folder_count', 0)}  文件: {summary.get('file_count', 0)}")
+        print()
+        for e in entries[:30]:
+            name = str(e.get("name", "") or "").strip()
+            is_dir = bool(e.get("is_dir", e.get("is_directory", e.get("type", "") == "folder")))
+            icon = "📁" if is_dir else "📄"
+            file_id = e.get("file_id", e.get("id", ""))
+            size = str(e.get("size", "") or "").strip()
+            print(f"  {icon} {name}  (id={file_id})" + (f"  {size}" if size else ""))
+
+    elif args.action == "receive":
+        resource_id = args.resource_id[0] if args.resource_id else ""
+        if not resource_id:
+            sys.exit("请指定资源 ID（先 search 获取）")
+        savepath = args.savepath or "/115"
+        data = c.json("POST", "/resource/jobs/create", {"resource_id": int(resource_id), "savepath": savepath})
+        print(f"✅ 转存任务已创建: {json.dumps(data, ensure_ascii=False)}")
+
+
+# ── Phase 3: scrape ────────────────────────────────────────────────────────
+
+def cmd_scrape(args, c: Client):
+    """刮削管理"""
+    if args.action == "identify":
+        path = " ".join(args.path) if args.path else ""
+        if not path:
+            sys.exit("请指定文件路径")
+        data = c.json("POST", "/scraper/identify", {"path": path})
+        print(fmt_json(data))
+
+    elif args.action == "rename-plan":
+        path = " ".join(args.path) if args.path else ""
+        if not path:
+            sys.exit("请指定文件路径")
+        data = c.json("POST", "/scraper/rename-plan", {"path": path})
+        print(fmt_json(data))
+
+    elif args.action == "diff":
+        job_id = args.job_id[0] if args.job_id else ""
+        if not job_id:
+            sys.exit("请指定 Job ID")
+        data = c.json("GET", "/scraper/jobs/state", {"limit": 50})
+        jobs = data if isinstance(data, list) else data.get("jobs", data.get("items", []))
+        for j in jobs:
+            if str(j.get("id", j.get("job_id", "")) or "") == job_id:
+                actions = j.get("actions", [])
+                if not actions:
+                    print("该任务无操作记录")
+                    return
+                print(f"刮削 Job #{job_id} 操作列表：")
+                print()
+                for a in actions:
+                    old_n = a.get("old_name", a.get("old_path", ""))
+                    new_n = a.get("new_name", a.get("new_path", ""))
+                    icon = "✅" if a.get("status") == "completed" else "⏳"
+                    print(f"  {icon} {old_n}")
+                    print(f"       → {new_n}")
+                    print()
+                return
+        print(f"未找到 Job #{job_id}")
+
+    elif args.action == "jobs":
+        provider = args.provider or ""
+        params = {"limit": args.limit or 20}
+        if provider:
+            params["provider"] = provider
+        data = c.json("GET", "/scraper/jobs/state", params)
+        print(fmt_json(data))
+
+    elif args.action == "providers":
+        data = c.json("GET", "/scraper/providers")
+        print(fmt_json(data))
+
+
+# ── Phase 3: watchlist ────────────────────────────────────────────────────
+
+def cmd_watchlist(args, c: Client):
+    """推荐清单"""
+    if args.action == "list":
+        data = c.json("GET", "/recommendation/state")
+        items = data if isinstance(data, list) else data.get("items", data.get("watchlist", []))
+        if not items:
+            print("推荐清单为空")
+            return
+        print(f"共 {len(items)} 部推荐：")
+        print()
+        for item in items:
+            title = str(item.get("title", "") or item.get("name", "") or "").strip()
+            tmdb_id = item.get("tmdb_id", item.get("id", "?"))
+            status = item.get("status", "pending")
+            status_icon = {"watching": "📺", "completed": "✅", "pending": "⏳", "dropped": "⏹️"}.get(status, "⏳")
+            print(f"  {status_icon} {title}  (TMDB:{tmdb_id})  [{status}]")
+
+    elif args.action == "add":
+        tmdb_id = args.tmdb_id[0] if args.tmdb_id else ""
+        if not tmdb_id:
+            sys.exit("请指定 TMDB ID")
+        data = c.json("POST", "/recommendation/watchlist/add", {"tmdb_id": int(tmdb_id)})
+        print(f"✅ 已添加到推荐清单: {json.dumps(data, ensure_ascii=False)}")
+
+    elif args.action == "remove":
+        tmdb_id = args.tmdb_id[0] if args.tmdb_id else ""
+        if not tmdb_id:
+            sys.exit("请指定 TMDB ID")
+        data = c.json("POST", "/recommendation/watchlist/remove", {"tmdb_id": int(tmdb_id)})
+        print(f"✅ 已从推荐清单移除: {json.dumps(data, ensure_ascii=False)}")
+
+    elif args.action == "update":
+        tmdb_id = args.tmdb_id[0] if args.tmdb_id else ""
+        if not tmdb_id:
+            sys.exit("请指定 TMDB ID")
+        status = args.status or "completed"
+        data = c.json("POST", "/recommendation/watchlist/update_status",
+                       {"tmdb_id": int(tmdb_id), "status": status})
+        print(f"✅ 状态已更新: {json.dumps(data, ensure_ascii=False)}")
+
+
+# ── Phase 3: strm ─────────────────────────────────────────────────────────
+
+def cmd_strm(args, c: Client):
+    """STRM 管理"""
+    if args.action == "orphans":
+        data = c.json("GET", "/strm/orphan-metadata/preview")
+        items = data if isinstance(data, list) else data.get("orphans", data.get("items", []))
+        dirs = data.get("local_dirs", data.get("dirs", [])) if isinstance(data, dict) else []
+        if not items and not dirs:
+            print("未发现孤儿 STRM 文件")
+            return
+        print(f"孤儿 STRM 文件: {len(items)} 个")
+        for item in items[:20]:
+            path = str(item.get("path", "") or item.get("file", "") or item.get("name", "") or "").strip()
+            print(f"  ❌ {path}")
+        if len(items) > 20:
+            print(f"  ... 还有 {len(items)-20} 个")
+        if dirs:
+            print()
+            print(f"本地目录: {len(dirs)} 个")
+            for d in dirs[:10]:
+                print(f"  📁 {d}")
+            if len(dirs) > 10:
+                print(f"  ... 还有 {len(dirs)-10} 个")
+
+    elif args.action == "cleanup":
+        data = c.json("POST", "/strm/orphan-metadata/delete")
+        deleted = data.get("deleted", data.get("count", data.get("ok", "?")))
+        print(f"✅ 已清理孤儿 STRM: {deleted} 项")
+
+    elif args.action == "dirs":
+        data = c.json("GET", "/strm/orphan-metadata/local-dirs")
+        dirs = data if isinstance(data, list) else data.get("dirs", data.get("local_dirs", []))
+        if not dirs:
+            print("无本地目录记录")
+            return
+        print(f"STRM 本地目录: {len(dirs)} 个")
+        for d in dirs:
+            print(f"  📁 {str(d).strip()}")
+
+
 # ── Main CLI ──────────────────────────────────────────────────────────────
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -748,6 +984,42 @@ def _build_parser() -> argparse.ArgumentParser:
     # providers
     sp.add_parser("providers", help="列出网盘提供商")
 
+    # browse
+    sp_browse = sp.add_parser("browse", help="网盘浏览")
+    sp_browse.add_argument("action", choices=["ls", "tree"])
+    sp_browse.add_argument("--provider", default="115", help="网盘提供商 (115/quark)")
+    sp_browse.add_argument("--cid", default="0", help="目录 ID")
+
+    # share
+    sp_share = sp.add_parser("share", help="分享管理")
+    sp_share.add_argument("action", choices=["preview", "receive"])
+    sp_share.add_argument("url", nargs="?", help="分享链接 (preview)")
+    sp_share.add_argument("resource_id", nargs="*", help="资源 ID (receive)")
+    sp_share.add_argument("--provider", default="115", help="网盘提供商")
+    sp_share.add_argument("--code", default="", help="提取码")
+    sp_share.add_argument("--cid", default="", help="目录 ID")
+    sp_share.add_argument("--savepath", default="/115", help="保存路径")
+
+    # scrape
+    sp_scrape = sp.add_parser("scrape", help="刮削管理")
+    sp_scrape.add_argument("action", choices=["identify", "rename-plan", "diff", "jobs", "providers"])
+    sp_scrape.add_argument("path", nargs="*", help="文件路径 (identify/rename-plan)")
+    sp_scrape.add_argument("job_id", nargs="*", help="Job ID (diff)")
+    sp_scrape.add_argument("--provider", default="", help="搜索提供商 (jobs)")
+    sp_scrape.add_argument("--limit", type=int, default=20, help="列表条数 (jobs)")
+
+    # watchlist
+    sp_wl = sp.add_parser("watchlist", help="推荐清单")
+    sp_wl.add_argument("action", choices=["list", "add", "remove", "update"])
+    sp_wl.add_argument("tmdb_id", nargs="*", help="TMDB ID (add/remove/update)")
+    sp_wl.add_argument("--status", default="completed",
+                       choices=["watching", "completed", "pending", "dropped"],
+                       help="状态 (update)")
+
+    # strm
+    sp_strm = sp.add_parser("strm", help="STRM 管理")
+    sp_strm.add_argument("action", choices=["orphans", "cleanup", "dirs"])
+
     return p
 
 
@@ -778,6 +1050,11 @@ def main():
         "tree": cmd_tree,
         "api": cmd_api,
         "providers": cmd_providers,
+        "browse": cmd_browse,
+        "share": cmd_share,
+        "scrape": cmd_scrape,
+        "watchlist": cmd_watchlist,
+        "strm": cmd_strm,
     }
 
     handler = dispatch.get(args.command)
