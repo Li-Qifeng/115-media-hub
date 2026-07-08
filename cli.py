@@ -25,6 +25,8 @@
                                        刮削管理
   115 watchlist list|add|remove|update  推荐清单
   115 strm orphans|cleanup|dirs         STRM 管理
+  115 resource import|preview|quick-links|delete
+                                       资源中心管理
   115 api <method> <path> [body]        通用 API 调用
   115 providers                          列出网盘提供商
   115 sources list|search|test          发现源管理
@@ -290,6 +292,17 @@ def cmd_channels(args, c: Client):
                 print(f"    链接: {link[:80]}")
             print()
 
+    elif args.action == "sync-names":
+        channel_id = args.channel_id or ""
+        if not channel_id:
+            sys.exit("请指定频道 ID（--channel 参数）")
+        data = c.json("POST", "/resource/channels/sync-names", {"channel_ids": [channel_id]})
+        print(f"✅ 频道名称已同步: {json.dumps(data, ensure_ascii=False)}")
+
+    elif args.action == "sync-cancel":
+        data = c.json("POST", "/resource/channels/sync/cancel")
+        print(f"✅ 同步已取消: {json.dumps(data, ensure_ascii=False)}")
+
 
 def cmd_subscribe(args, c: Client):
     """管理订阅"""
@@ -432,6 +445,19 @@ def cmd_jobs(args, c: Client):
 
 def cmd_settings(args, c: Client):
     """查看/修改配置"""
+    if args.test_proxy:
+        result = c.json("POST", "/settings/tg_proxy/test", {})
+        print(fmt_json(result))
+        return
+    if args.test_pansou:
+        result = c.json("POST", "/settings/pansou/test", {})
+        print(fmt_json(result))
+        return
+    if args.test_notify:
+        result = c.json("POST", "/settings/notify/test", {})
+        print(fmt_json(result))
+        return
+
     cfg = c.json("GET", "/get_settings")
 
     if not args.kv:
@@ -811,6 +837,25 @@ def cmd_browse(args, c: Client):
             return
         _print_tree(entries, provider, c, prefix="")
 
+    elif args.action == "folders":
+        data = c.json("GET", f"/resource/browse/{provider}/folders", {"cid": cid})
+        folders = data if isinstance(data, list) else data.get("folders", data.get("items", []))
+        if not folders:
+            print("(空目录)")
+            return
+        print(f"📁 {provider} 子目录 (cid={cid})")
+        for f in folders:
+            name = str(f.get("name", "") or "").strip()
+            fid = f.get("file_id", f.get("id", f.get("cid", "")))
+            print(f"  📁 {name}  (id={fid})")
+
+    elif args.action == "create-folder":
+        name = args.name or ""
+        if not name:
+            sys.exit("请指定目录名称（--name）")
+        data = c.json("POST", f"/resource/browse/{provider}/folders/create", {"cid": cid, "name": name})
+        print(f"✅ 已创建目录「{name}」: {json.dumps(data, ensure_ascii=False)}")
+
 
 def _print_tree(entries: list, provider: str, c: Client, prefix: str = "", depth: int = 0):
     if depth > 3:
@@ -924,6 +969,51 @@ def cmd_scrape(args, c: Client):
         data = c.json("GET", "/scraper/providers")
         print(fmt_json(data))
 
+    elif args.action == "move":
+        path = " ".join(args.path) if args.path else ""
+        if not path:
+            sys.exit("请指定文件路径")
+        dest = args.dest or ""
+        if not dest:
+            sys.exit("请指定目标路径（--dest）")
+        provider = args.provider or "115"
+        data = c.json("POST", f"/scraper/{provider}/move", {"path": path, "dest": dest})
+        print(f"✅ 移动完成: {json.dumps(data, ensure_ascii=False)}")
+
+    elif args.action == "copy":
+        path = " ".join(args.path) if args.path else ""
+        if not path:
+            sys.exit("请指定文件路径")
+        dest = args.dest or ""
+        if not dest:
+            sys.exit("请指定目标路径（--dest）")
+        provider = args.provider or "115"
+        data = c.json("POST", f"/scraper/{provider}/copy", {"path": path, "dest": dest})
+        print(f"✅ 复制完成: {json.dumps(data, ensure_ascii=False)}")
+
+    elif args.action == "delete":
+        path = " ".join(args.path) if args.path else ""
+        if not path:
+            sys.exit("请指定文件路径")
+        provider = args.provider or "115"
+        confirm = args.yes or input(f"确定要删除 {path}？(y/N): ").lower() == "y"
+        if not confirm:
+            print("已取消")
+            return
+        data = c.json("POST", f"/scraper/{provider}/delete", {"path": path})
+        print(f"✅ 删除完成: {json.dumps(data, ensure_ascii=False)}")
+
+    elif args.action == "rollback":
+        job_id = args.job_id[0] if args.job_id else ""
+        if not job_id:
+            sys.exit("请指定 Job ID")
+        data = c.json("POST", f"/scraper/jobs/{job_id}/rollback")
+        print(f"✅ 回滚完成: {json.dumps(data, ensure_ascii=False)}")
+
+    elif args.action == "jobs-clear":
+        data = c.json("POST", "/scraper/jobs/clear")
+        print(f"✅ 刮削任务已清理: {json.dumps(data, ensure_ascii=False)}")
+
 
 # ── Phase 3: watchlist ────────────────────────────────────────────────────
 
@@ -1009,6 +1099,95 @@ def cmd_strm(args, c: Client):
             print(f"  📁 {str(d).strip()}")
 
 
+# ── Phase 5: resource ─────────────────────────────────────────────────────
+
+def cmd_resource(args, c: Client):
+    """资源中心管理"""
+    if args.action == "import":
+        text = args.text or ""
+        if not text and not sys.stdin.isatty():
+            text = sys.stdin.read().strip()
+        if not text:
+            sys.exit("请指定资源文本（--text 参数或通过管道传入）")
+        provider = args.provider or "115"
+        data = c.json("POST", "/resource/items/import_text", {"text": text, "provider": provider})
+        imported = data.get("imported", data.get("count", 0))
+        total = data.get("total", data.get("items", 0))
+        print(f"✅ 已导入 {imported}/{total} 个资源")
+        if data.get("errors"):
+            for err in data["errors"][:5]:
+                print(f"  ⚠️ {err}")
+
+    elif args.action == "preview":
+        text = args.text or ""
+        if not text and not sys.stdin.isatty():
+            text = sys.stdin.read().strip()
+        if not text:
+            sys.exit("请指定资源文本（--text 参数或通过管道传入）")
+        data = c.json("POST", "/resource/items/preview_text", {"text": text})
+        items = data if isinstance(data, list) else data.get("items", data.get("results", []))
+        if not items:
+            print("未识别到有效资源")
+            return
+        print(f"识别到 {len(items)} 个资源：")
+        print()
+        for item in items[:20]:
+            title = str(item.get("title", "") or "").strip() or "(无标题)"
+            link = str(item.get("link_url", "") or "").strip()
+            link_type = str(item.get("link_type", "") or "").strip()
+            print(f"  • {title}  [{link_type}]")
+            if link:
+                print(f"    链接: {link[:80]}")
+            print()
+
+    elif args.action == "quick-links":
+        if args.sub_action == "list":
+            cfg = c.json("GET", "/get_settings")
+            links = cfg.get("quick_links", [])
+            if not links:
+                print("未配置快捷链接")
+                return
+            print(f"共 {len(links)} 个快捷链接：")
+            for link in links:
+                name = str(link.get("name", "") or "").strip()
+                url = str(link.get("url", "") or "").strip()
+                print(f"  • {name}  → {url}")
+        elif args.sub_action == "add":
+            name = args.name or ""
+            url = args.url or ""
+            if not name or not url:
+                sys.exit("请指定 --name 和 --url")
+            cfg = c.json("GET", "/get_settings")
+            quick_links: list = cfg.get("quick_links", [])
+            quick_links.append({"name": name, "url": url})
+            cfg["quick_links"] = quick_links
+            c.json("POST", "/save_settings", cfg)
+            print(f"✅ 已添加快捷链接「{name}」")
+        elif args.sub_action == "remove":
+            name = args.name or ""
+            if not name:
+                sys.exit("请指定快捷链接名称")
+            cfg = c.json("GET", "/get_settings")
+            before = len(cfg.get("quick_links", []))
+            cfg["quick_links"] = [l for l in cfg.get("quick_links", []) if str(l.get("name", "") or "").strip() != name]
+            removed = before - len(cfg["quick_links"])
+            if removed == 0:
+                sys.exit(f"未找到快捷链接「{name}」")
+            c.json("POST", "/save_settings", cfg)
+            print(f"✅ 已删除快捷链接「{name}」")
+
+    elif args.action == "delete":
+        resource_id = args.resource_id[0] if args.resource_id else ""
+        if not resource_id:
+            sys.exit("请指定资源 ID")
+        confirm = args.yes or input(f"确定要删除资源 #{resource_id}？(y/N): ").lower() == "y"
+        if not confirm:
+            print("已取消")
+            return
+        data = c.json("POST", "/resource/items/delete", {"id": int(resource_id)})
+        print(f"✅ 已删除: {json.dumps(data, ensure_ascii=False)}")
+
+
 # ── Main CLI ──────────────────────────────────────────────────────────────
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -1032,9 +1211,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # channels
     sp_ch = sp.add_parser("channels", help="管理资源频道")
-    sp_ch.add_argument("action", choices=["sync", "list", "classify", "more"], help="sync=同步, list=列出, classify=分类, more=更多内容")
+    sp_ch.add_argument("action", choices=["sync", "list", "classify", "more", "sync-names", "sync-cancel"], help="sync=同步, list=列出, classify=分类, more=更多内容, sync-names=同步名称, sync-cancel=取消同步")
     sp_ch.add_argument("--force", action="store_true", help="强制重新同步")
-    sp_ch.add_argument("--channel", dest="channel_id", default="", help="频道 ID (more)")
+    sp_ch.add_argument("--channel", dest="channel_id", default="", help="频道 ID (more/classify/sync-names)")
     sp_ch.add_argument("--limit", type=int, default=10, help="条数 (more)")
 
     # subscribe
@@ -1060,6 +1239,9 @@ def _build_parser() -> argparse.ArgumentParser:
     # settings
     sp_set = sp.add_parser("settings", help="查看/修改配置")
     sp_set.add_argument("kv", nargs="*", help='key=value (例如 cookie_115="xxx")')
+    sp_set.add_argument("--test-proxy", action="store_true", help="测试 TG 代理连接")
+    sp_set.add_argument("--test-pansou", action="store_true", help="测试 PanSou 盘搜")
+    sp_set.add_argument("--test-notify", action="store_true", help="测试通知推送")
 
     # logs
     sp_logs = sp.add_parser("logs", help="查看系统日志")
@@ -1111,9 +1293,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # browse
     sp_browse = sp.add_parser("browse", help="网盘浏览")
-    sp_browse.add_argument("action", choices=["ls", "tree"])
+    sp_browse.add_argument("action", choices=["ls", "tree", "folders", "create-folder"])
     sp_browse.add_argument("--provider", default="115", help="网盘提供商 (115/quark)")
     sp_browse.add_argument("--cid", default="0", help="目录 ID")
+    sp_browse.add_argument("--name", default="", help="目录名称 (create-folder)")
 
     # share
     sp_share = sp.add_parser("share", help="分享管理")
@@ -1127,11 +1310,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # scrape
     sp_scrape = sp.add_parser("scrape", help="刮削管理")
-    sp_scrape.add_argument("action", choices=["identify", "rename-plan", "diff", "jobs", "providers"])
-    sp_scrape.add_argument("path", nargs="*", help="文件路径 (identify/rename-plan)")
-    sp_scrape.add_argument("job_id", nargs="*", help="Job ID (diff)")
-    sp_scrape.add_argument("--provider", default="", help="搜索提供商 (jobs)")
+    sp_scrape.add_argument("action", choices=["identify", "rename-plan", "diff", "jobs", "providers", "move", "copy", "delete", "rollback", "jobs-clear"])
+    sp_scrape.add_argument("path", nargs="*", help="文件路径 (identify/rename-plan/move/copy/delete)")
+    sp_scrape.add_argument("job_id", nargs="*", help="Job ID (diff/rollback)")
+    sp_scrape.add_argument("--provider", default="", help="提供商 (jobs/move/copy/delete)")
     sp_scrape.add_argument("--limit", type=int, default=20, help="列表条数 (jobs)")
+    sp_scrape.add_argument("--dest", default="", help="目标路径 (move/copy)")
+    sp_scrape.add_argument("--yes", action="store_true", help="跳过确认 (delete)")
 
     # watchlist
     sp_wl = sp.add_parser("watchlist", help="推荐清单")
@@ -1144,6 +1329,17 @@ def _build_parser() -> argparse.ArgumentParser:
     # strm
     sp_strm = sp.add_parser("strm", help="STRM 管理")
     sp_strm.add_argument("action", choices=["orphans", "cleanup", "dirs"])
+
+    # resource
+    sp_rsrc = sp.add_parser("resource", help="资源中心管理")
+    sp_rsrc.add_argument("action", choices=["import", "preview", "quick-links", "delete"])
+    sp_rsrc.add_argument("sub_action", nargs="?", default="list", help="quick-links 子操作 (list/add/remove)")
+    sp_rsrc.add_argument("resource_id", nargs="*", help="资源 ID (delete)")
+    sp_rsrc.add_argument("--text", default="", help="资源文本 (import/preview)")
+    sp_rsrc.add_argument("--provider", default="115", help="网盘提供商 (import)")
+    sp_rsrc.add_argument("--name", default="", help="名称 (quick-links add/remove)")
+    sp_rsrc.add_argument("--url", default="", help="链接 URL (quick-links add)")
+    sp_rsrc.add_argument("--yes", action="store_true", help="跳过确认 (delete)")
 
     return p
 
@@ -1180,6 +1376,7 @@ def main():
         "scrape": cmd_scrape,
         "watchlist": cmd_watchlist,
         "strm": cmd_strm,
+        "resource": cmd_resource,
     }
 
     handler = dispatch.get(args.command)
