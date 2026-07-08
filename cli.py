@@ -569,7 +569,7 @@ def cmd_tmdb(args, c: Client):
         keyword = " ".join(args.keyword) if args.keyword else ""
         if not keyword:
             sys.exit("请指定搜索关键词")
-        data = c.json("GET", "/tmdb/search", {"query": keyword, "page": args.page or 1})
+        data = c.json("GET", "/tmdb/search", {"q": keyword, "page": args.page or 1})
         items = data if isinstance(data, list) else data.get("results", data.get("items", []))
         print(fmt_tmdb_items(items))
 
@@ -962,7 +962,7 @@ def cmd_share(args, c: Client):
             clean = _re.sub(r"\s+(19|20)\d{2}\s*$", "", clean).strip()
             # 2. TMDB 查 media_type
             try:
-                resp = c.request("GET", "/tmdb/search", {"query": clean})
+                resp = c.request("GET", "/tmdb/search", {"q": clean})
                 if resp.status_code == 200:
                     tmdb_data = resp.json()
                     items = tmdb_data if isinstance(tmdb_data, list) else tmdb_data.get("results", tmdb_data.get("items", []))
