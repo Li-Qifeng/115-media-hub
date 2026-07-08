@@ -12,7 +12,7 @@
                                        管理资源任务
   115 settings [key=value...]           查看/修改配置
   115 logs [tail]                       查看系统日志
-  115 cookies check|status              检查 Cookie 状态
+  115 cookies check|status|test          检查 Cookie 状态
   115 sign run|status                   115 每日签到
   115 tmdb search|popular|trending|detail|genres|discover
                                        TMDB 搜索
@@ -21,7 +21,7 @@
   115 tree run|status                   目录树同步
   115 browse ls|tree                    网盘浏览
   115 share preview|receive             分享管理
-  115 scrape identify|rename-plan|diff|jobs|providers
+  115 scrape identify|rename-plan|diff|jobs|providers|entries|folders|rename-warning|jobs-create|move|copy|delete|rollback|jobs-clear
                                        刮削管理
   115 watchlist list|add|remove|update  推荐清单
   115 strm orphans|cleanup|dirs         STRM 管理
@@ -245,6 +245,10 @@ def cmd_version(args, c: Client):
 
 def cmd_search(args, c: Client):
     """搜索资源"""
+    if args.action == "cancel":
+        data = c.json("POST", "/resource/search/cancel")
+        print(f"✅ 搜索已取消: {json.dumps(data, ensure_ascii=False)}")
+        return
     keyword = " ".join(args.keyword)
     data = c.json("GET", "/resource/state", {"q": keyword, "compact": "1"})
     items = []
@@ -375,6 +379,10 @@ def cmd_subscribe(args, c: Client):
         data = c.json("GET", "/subscription/logs")
         logs = data if isinstance(data, list) else data.get("logs", [])
         print(fmt_logs(logs, "订阅日志"))
+
+    elif args.action == "logs-clear":
+        data = c.json("POST", "/subscription/logs/clear")
+        print(f"✅ 订阅日志已清除: {json.dumps(data, ensure_ascii=False)}")
 
     elif args.action == "rebuild":
         name = args.name or ""
@@ -520,6 +528,10 @@ def cmd_settings(args, c: Client):
 
 def cmd_logs(args, c: Client):
     """查看系统日志"""
+    if args.action == "clear":
+        data = c.json("POST", "/logs/clear")
+        print(f"✅ 日志已清除: {json.dumps(data, ensure_ascii=False)}")
+        return
     data = c.json("GET", "/logs")
     logs = data if isinstance(data, list) else data.get("logs", [])
     if args.tail:
@@ -534,6 +546,10 @@ def cmd_cookies(args, c: Client):
         print(fmt_json(data))
     elif args.action == "status":
         data = c.json("GET", "/settings/cookies/status")
+        print(fmt_json(data))
+    elif args.action == "test":
+        provider = args.provider or "115"
+        data = c.json("POST", "/test_provider_cookie", {"provider": provider})
         print(fmt_json(data))
 
 
@@ -657,6 +673,22 @@ def cmd_monitor(args, c: Client):
     elif args.action == "logs":
         data = c.json("GET", "/monitor/logs/tasks")
         print(fmt_json(data))
+
+    elif args.action == "logs-clear":
+        data = c.json("POST", "/monitor/logs/clear")
+        print(f"✅ 监控日志已清除: {json.dumps(data, ensure_ascii=False)}")
+
+    elif args.action == "userscript-jobs":
+        data = c.json("GET", "/monitor/userscript/jobs")
+        jobs = data if isinstance(data, list) else data.get("jobs", data.get("items", []))
+        if not jobs:
+            print("无油猴脚本任务")
+            return
+        print(f"油猴脚本任务 ({len(jobs)}):")
+        for j in jobs:
+            name = str(j.get("name", "") or j.get("task_name", "") or "").strip()
+            status = j.get("status", "?")
+            print(f"  • {name}  [{status}]")
 
 
 def cmd_tree(args, c: Client):
@@ -917,6 +949,14 @@ def cmd_share(args, c: Client):
         data = c.json("POST", "/resource/jobs/create", {"resource_id": int(resource_id), "savepath": savepath})
         print(f"✅ 转存任务已创建: {json.dumps(data, ensure_ascii=False)}")
 
+    elif args.action == "preview-batch":
+        url = args.url or ""
+        if not url:
+            sys.exit("请指定分享链接")
+        provider = args.provider or "115"
+        data = c.json("POST", f"/resource/browse/{provider}/share_entries_preview", {"link_url": url})
+        print(fmt_json(data))
+
 
 # ── Phase 3: scrape ────────────────────────────────────────────────────────
 
@@ -971,6 +1011,48 @@ def cmd_scrape(args, c: Client):
     elif args.action == "providers":
         data = c.json("GET", "/scraper/providers")
         print(fmt_json(data))
+
+    elif args.action == "entries":
+        provider = args.provider or "115"
+        data = c.json("GET", f"/scraper/{provider}/entries")
+        entries = data if isinstance(data, list) else data.get("entries", data.get("items", []))
+        if not entries:
+            print("(无条目)")
+            return
+        print(f"{provider} 刮削条目 ({len(entries)}):")
+        for e in entries[:30]:
+            name = str(e.get("name", "") or e.get("path", "") or "").strip()
+            media_type = e.get("media_type", e.get("type", "?"))
+            print(f"  • {name}  [{media_type}]")
+
+    elif args.action == "folders":
+        provider = args.provider or "115"
+        cid = args.cid or "0"
+        data = c.json("POST", f"/scraper/{provider}/folders", {"cid": cid})
+        folders = data if isinstance(data, list) else data.get("folders", data.get("items", []))
+        if not folders:
+            print("(空目录)")
+            return
+        print(f"📁 {provider} 刮削目录 (cid={cid})")
+        for f in folders:
+            name = str(f.get("name", "") or "").strip()
+            fid = f.get("file_id", f.get("id", f.get("cid", "")))
+            print(f"  📁 {name}  (id={fid})")
+
+    elif args.action == "rename-warning":
+        path = " ".join(args.path) if args.path else ""
+        if not path:
+            sys.exit("请指定文件路径")
+        provider = args.provider or "115"
+        data = c.json("POST", f"/scraper/{provider}/rename-warning", {"path": path})
+        print(fmt_json(data))
+
+    elif args.action == "jobs-create":
+        path = " ".join(args.path) if args.path else ""
+        if not path:
+            sys.exit("请指定文件路径")
+        data = c.json("POST", "/scraper/jobs/create", {"path": path})
+        print(f"✅ 刮削任务已创建: {json.dumps(data, ensure_ascii=False)}")
 
     elif args.action == "move":
         path = " ".join(args.path) if args.path else ""
@@ -1382,7 +1464,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # search
     sp_search = sp.add_parser("search", help="搜索资源")
-    sp_search.add_argument("keyword", nargs="+", help="搜索关键词")
+    sp_search.add_argument("keyword", nargs="*", help="搜索关键词 (留空=cancel 时忽略)")
+    sp_search.add_argument("action", nargs="?", default="", choices=["", "cancel"], help="cancel=取消搜索")
 
     # channels
     sp_ch = sp.add_parser("channels", help="管理资源频道")
@@ -1393,7 +1476,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # subscribe
     sp_sub = sp.add_parser("subscribe", help="管理订阅")
-    sp_sub.add_argument("action", choices=["list", "add", "remove", "start", "stop", "status", "logs", "rebuild", "episodes", "start-with-link"])
+    sp_sub.add_argument("action", choices=["list", "add", "remove", "start", "stop", "status", "logs", "logs-clear", "rebuild", "episodes", "start-with-link"])
     sp_sub.add_argument("name", nargs="*", help="订阅名称 (add/remove/start)")
     sp_sub.add_argument("--type", default="movie", choices=["movie", "tv"], help="媒体类型")
     sp_sub.add_argument("--quality", default="balanced", help="质量偏好 (4K/1080p/720p/balanced)")
@@ -1420,11 +1503,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # logs
     sp_logs = sp.add_parser("logs", help="查看系统日志")
-    sp_logs.add_argument("tail", nargs="?", type=int, default=0, help="只显示最后 N 条")
+    sp_logs.add_argument("action", nargs="?", default="", choices=["", "clear"], help="clear=清除日志, 留空=查看")
+    sp_logs.add_argument("tail", nargs="?", type=int, default=0, help="只显示最后 N 条 (与 action 互斥)")
 
     # cookies
     sp_cookies = sp.add_parser("cookies", help="检查 Cookie 状态")
-    sp_cookies.add_argument("action", choices=["check", "status"], help="check=检测, status=查看缓存状态")
+    sp_cookies.add_argument("action", choices=["check", "status", "test"], help="check=检测, status=查看缓存状态, test=测试指定提供商")
+    sp_cookies.add_argument("--provider", default="115", help="网盘提供商 (test)")
 
     # sign
     sp_sign = sp.add_parser("sign", help="115 每日签到")
@@ -1445,7 +1530,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # monitor
     sp_mon = sp.add_parser("monitor", help="文件夹监控管理")
-    sp_mon.add_argument("action", choices=["list", "status", "start", "stop", "logs", "add", "remove"])
+    sp_mon.add_argument("action", choices=["list", "status", "start", "stop", "logs", "logs-clear", "userscript-jobs", "add", "remove"])
     sp_mon.add_argument("name", nargs="?", default="", help="监控任务名称 (add/remove)")
     sp_mon.add_argument("--scan-path", default="/", help="扫描路径 (add)")
     sp_mon.add_argument("--cron-minutes", type=int, default=0, help="定时周期分钟数, 0=仅手动 (add)")
@@ -1475,7 +1560,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # share
     sp_share = sp.add_parser("share", help="分享管理")
-    sp_share.add_argument("action", choices=["preview", "receive"])
+    sp_share.add_argument("action", choices=["preview", "receive", "preview-batch"])
     sp_share.add_argument("url", nargs="?", help="分享链接 (preview)")
     sp_share.add_argument("resource_id", nargs="*", help="资源 ID (receive)")
     sp_share.add_argument("--provider", default="115", help="网盘提供商")
@@ -1485,12 +1570,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # scrape
     sp_scrape = sp.add_parser("scrape", help="刮削管理")
-    sp_scrape.add_argument("action", choices=["identify", "rename-plan", "diff", "jobs", "providers", "move", "copy", "delete", "rollback", "jobs-clear"])
-    sp_scrape.add_argument("path", nargs="*", help="文件路径 (identify/rename-plan/move/copy/delete)")
+    sp_scrape.add_argument("action", choices=["identify", "rename-plan", "diff", "jobs", "providers", "entries", "folders", "rename-warning", "jobs-create", "move", "copy", "delete", "rollback", "jobs-clear"])
+    sp_scrape.add_argument("path", nargs="*", help="文件路径 (identify/rename-plan/move/copy/delete/rename-warning/jobs-create)")
     sp_scrape.add_argument("job_id", nargs="*", help="Job ID (diff/rollback)")
     sp_scrape.add_argument("--provider", default="", help="提供商 (jobs/move/copy/delete)")
     sp_scrape.add_argument("--limit", type=int, default=20, help="列表条数 (jobs)")
     sp_scrape.add_argument("--dest", default="", help="目标路径 (move/copy)")
+    sp_scrape.add_argument("--cid", default="0", help="目录 ID (folders)")
     sp_scrape.add_argument("--yes", action="store_true", help="跳过确认 (delete)")
 
     # watchlist
