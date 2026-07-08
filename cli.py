@@ -1,31 +1,33 @@
 #!/usr/bin/env python3
 """
-115 — 115 Media Hub CLI 工具
+|115 — 115 Media Hub CLI 工具
 
 用法:
   115 status                            系统状态
   115 search <关键词>                    搜索资源
-  115 channels sync|list                管理资源频道
-  115 subscribe list                     列出订阅
-  115 subscribe add <标题> [选项]         创建订阅
-  115 subscribe remove <名称>            删除订阅
-  115 subscribe start|stop|status|logs   订阅操作
-  115 jobs list|clear|retry              管理资源任务
-  115 settings [key=value...]            查看/修改配置
-  115 logs [tail]                        查看系统日志
-  115 cookies check                      检查 Cookie 状态
-  115 sign run|status                    115 每日签到
-  115 tmdb search|popular|trending|detail TMDB 搜索
-  115 monitor list|status|start|stop     文件夹监控
-  115 tree run                           目录树同步
-  115 browse ls|tree                     网盘浏览
-  115 share preview|receive              分享管理
-  115 scrape identify|rename-plan|diff   刮削管理
-  115 watchlist list|add|remove|update   推荐清单
-  115 strm orphans|cleanup|dirs          STRM 管理
-  115 api <method> <path> [body]         通用 API 调用
+  115 channels sync|list|classify|more  管理资源频道
+  115 subscribe list|add|remove|start|stop|status|logs|rebuild|episodes|start-with-link
+                                       管理订阅
+  115 jobs list|clear|retry|create|refresh|cancel
+                                       管理资源任务
+  115 settings [key=value...]           查看/修改配置
+  115 logs [tail]                       查看系统日志
+  115 cookies check|status              检查 Cookie 状态
+  115 sign run|status                   115 每日签到
+  115 tmdb search|popular|trending|detail|genres|discover
+                                       TMDB 搜索
+  115 monitor list|status|start|stop|logs|add|remove
+                                       文件夹监控管理
+  115 tree run|status                   目录树同步
+  115 browse ls|tree                    网盘浏览
+  115 share preview|receive             分享管理
+  115 scrape identify|rename-plan|diff|jobs|providers
+                                       刮削管理
+  115 watchlist list|add|remove|update  推荐清单
+  115 strm orphans|cleanup|dirs         STRM 管理
+  115 api <method> <path> [body]        通用 API 调用
   115 providers                          列出网盘提供商
-  115 sources list|search|test           发现源管理
+  115 sources list|search|test          发现源管理
   115 version                            版本信息
 
 示例:
@@ -263,6 +265,30 @@ def cmd_channels(args, c: Client):
             channel = str(s.get("channel_id", "") or "").strip()
             enabled = "🟢" if s.get("enabled", True) else "🔴"
             print(f"  {enabled} {name} (@{channel})")
+    elif args.action == "classify":
+        channel_id = args.channel_id or ""
+        if not channel_id:
+            sys.exit("请指定频道 ID（--channel 参数）")
+        data = c.json("POST", "/resource/channels/classify", {"channel_id": channel_id})
+        print(f"✅ 频道分类已完成: {json.dumps(data, ensure_ascii=False)}")
+    elif args.action == "more":
+        channel_id = args.channel_id or ""
+        if not channel_id:
+            sys.exit("请指定频道 ID（--channel 参数）")
+        data = c.json("POST", "/resource/channels/more", {"channel_id": channel_id, "limit": args.limit or 10})
+        items = data if isinstance(data, list) else data.get("items", data.get("posts", []))
+        if not items:
+            print(f"频道 @{channel_id} 暂无更多内容")
+            return
+        print(f"频道 @{channel_id} 最新 {len(items)} 条：")
+        print()
+        for item in items:
+            title = str(item.get("title", "") or "").strip() or "(无标题)"
+            link = str(item.get("link_url", "") or "").strip()
+            print(f"  • {title}")
+            if link:
+                print(f"    链接: {link[:80]}")
+            print()
 
 
 def cmd_subscribe(args, c: Client):
@@ -334,6 +360,38 @@ def cmd_subscribe(args, c: Client):
         logs = data if isinstance(data, list) else data.get("logs", [])
         print(fmt_logs(logs, "订阅日志"))
 
+    elif args.action == "rebuild":
+        name = args.name or ""
+        if not name:
+            sys.exit("请指定订阅名称（--name 参数）")
+        data = c.json("POST", "/subscription/rebuild", {"name": name})
+        print(f"✅ 订阅已重建: {json.dumps(data, ensure_ascii=False)}")
+
+    elif args.action == "episodes":
+        name = args.name or ""
+        if not name:
+            sys.exit("请指定订阅名称（--name 参数）")
+        data = c.json("GET", "/subscription/episodes", {"name": name})
+        episodes = data if isinstance(data, list) else data.get("episodes", data.get("items", []))
+        if not episodes:
+            print("暂无剧集信息")
+            return
+        print(f"剧集更新 ({len(episodes)}):")
+        for ep in episodes[:30]:
+            title = str(ep.get("title", "") or ep.get("name", "") or "").strip()
+            season = ep.get("season_number", ep.get("season", ""))
+            episode = ep.get("episode_number", ep.get("episode", ""))
+            air_date = str(ep.get("air_date", "") or "").strip()
+            print(f"  • S{season}E{episode} {title}  ({air_date})")
+
+    elif args.action == "start-with-link":
+        link = args.link or ""
+        if not link:
+            sys.exit("请指定资源链接（--link 参数）")
+        savepath = args.savepath or "/115"
+        data = c.json("POST", "/subscription/start_with_link", {"link": link, "savepath": savepath})
+        print(f"✅ 订阅已通过链接触发: {json.dumps(data, ensure_ascii=False)}")
+
 
 def cmd_jobs(args, c: Client):
     """管理资源任务"""
@@ -351,6 +409,25 @@ def cmd_jobs(args, c: Client):
             sys.exit("请指定任务 ID")
         data = c.json("POST", "/resource/jobs/retry", {"job_id": int(args.job_id[0])})
         print(f"✅ 已重试: {json.dumps(data, ensure_ascii=False)}")
+    elif args.action == "create":
+        resource_id = args.resource_id[0] if args.resource_id else ""
+        if not resource_id:
+            sys.exit("请指定资源 ID（先 search 获取）")
+        savepath = args.savepath or "/115"
+        data = c.json("POST", "/resource/jobs/create", {"resource_id": int(resource_id), "savepath": savepath})
+        print(f"✅ 转存任务已创建: {json.dumps(data, ensure_ascii=False)}")
+    elif args.action == "refresh":
+        job_id = args.job_id[0] if args.job_id else ""
+        if not job_id:
+            sys.exit("请指定任务 ID")
+        data = c.json("POST", "/resource/jobs/refresh", {"job_id": int(job_id)})
+        print(f"✅ 已触发刷新: {json.dumps(data, ensure_ascii=False)}")
+    elif args.action == "cancel":
+        job_id = args.job_id[0] if args.job_id else ""
+        if not job_id:
+            sys.exit("请指定任务 ID")
+        data = c.json("POST", "/resource/jobs/cancel", {"job_id": int(job_id)})
+        print(f"✅ 已取消任务: {json.dumps(data, ensure_ascii=False)}")
 
 
 def cmd_settings(args, c: Client):
@@ -503,6 +580,42 @@ def cmd_monitor(args, c: Client):
             print(f"  当前任务: {current}")
         if queued:
             print(f"  排队中: {', '.join(queued)}")
+
+    elif args.action == "add":
+        cfg = c.json("GET", "/get_settings")
+        tasks: list = cfg.get("monitor_tasks", [])
+        name = args.name.strip() if args.name else ""
+        if not name:
+            sys.exit("请指定监控任务名称")
+        for t in tasks:
+            if str(t.get("name", "") or "").strip() == name:
+                sys.exit(f"监控任务「{name}」已存在")
+        new_task = {
+            "name": name,
+            "scan_path": args.scan_path.rstrip("/") if args.scan_path else "/",
+            "cron_minutes": args.cron_minutes or 0,
+            "webhook_enabled": args.webhook,
+            "delay_seconds": args.delay or 0,
+            "enabled": not args.pause,
+        }
+        tasks.append(new_task)
+        cfg["monitor_tasks"] = tasks
+        c.json("POST", "/save_settings", cfg)
+        print(f"✅ 已创建监控任务「{name}」")
+
+    elif args.action == "remove":
+        cfg = c.json("GET", "/get_settings")
+        tasks: list = cfg.get("monitor_tasks", [])
+        name = args.name.strip() if args.name else ""
+        if not name:
+            sys.exit("请指定要删除的监控任务名称")
+        before = len(tasks)
+        cfg["monitor_tasks"] = [t for t in tasks if str(t.get("name", "") or "").strip() != name]
+        removed = before - len(cfg["monitor_tasks"])
+        if removed == 0:
+            sys.exit(f"未找到监控任务「{name}」")
+        c.json("POST", "/save_settings", cfg)
+        print(f"✅ 已删除监控任务「{name}」")
 
     elif args.action == "start":
         data = c.json("POST", "/monitor/start")
@@ -919,24 +1032,30 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # channels
     sp_ch = sp.add_parser("channels", help="管理资源频道")
-    sp_ch.add_argument("action", choices=["sync", "list"], help="sync=同步频道, list=列出频道")
+    sp_ch.add_argument("action", choices=["sync", "list", "classify", "more"], help="sync=同步, list=列出, classify=分类, more=更多内容")
     sp_ch.add_argument("--force", action="store_true", help="强制重新同步")
+    sp_ch.add_argument("--channel", dest="channel_id", default="", help="频道 ID (more)")
+    sp_ch.add_argument("--limit", type=int, default=10, help="条数 (more)")
 
     # subscribe
     sp_sub = sp.add_parser("subscribe", help="管理订阅")
-    sp_sub.add_argument("action", choices=["list", "add", "remove", "start", "stop", "status", "logs"])
+    sp_sub.add_argument("action", choices=["list", "add", "remove", "start", "stop", "status", "logs", "rebuild", "episodes", "start-with-link"])
     sp_sub.add_argument("name", nargs="*", help="订阅名称 (add/remove/start)")
     sp_sub.add_argument("--type", default="movie", choices=["movie", "tv"], help="媒体类型")
     sp_sub.add_argument("--quality", default="balanced", help="质量偏好 (4K/1080p/720p/balanced)")
     sp_sub.add_argument("--savepath", default="/电影", help="115 保存路径")
     sp_sub.add_argument("--provider", default="115", choices=["115", "quark"], help="网盘提供商")
+    sp_sub.add_argument("--link", default="", help="资源链接 (start-with-link)")
+    sp_sub.add_argument("--name", default="", help="订阅名称 (rebuild/episodes)")
 
     # jobs
     sp_jobs = sp.add_parser("jobs", help="管理资源任务")
-    sp_jobs.add_argument("action", choices=["list", "clear", "clear_completed", "clear-completed", "retry"])
-    sp_jobs.add_argument("job_id", nargs="*", help="任务 ID (retry)")
+    sp_jobs.add_argument("action", choices=["list", "clear", "clear_completed", "clear-completed", "retry", "create", "refresh", "cancel"])
+    sp_jobs.add_argument("job_id", nargs="*", help="任务 ID (retry/refresh/cancel)")
     sp_jobs.add_argument("--limit", type=int, default=20, help="列表条数")
     sp_jobs.add_argument("--status", default="", help="过滤状态 (pending/submitted/completed/failed)")
+    sp_jobs.add_argument("resource_id", nargs="*", help="资源 ID (create)")
+    sp_jobs.add_argument("--savepath", default="/115", help="保存路径 (create)")
 
     # settings
     sp_set = sp.add_parser("settings", help="查看/修改配置")
@@ -969,7 +1088,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # monitor
     sp_mon = sp.add_parser("monitor", help="文件夹监控管理")
-    sp_mon.add_argument("action", choices=["list", "status", "start", "stop", "logs"])
+    sp_mon.add_argument("action", choices=["list", "status", "start", "stop", "logs", "add", "remove"])
+    sp_mon.add_argument("name", nargs="?", default="", help="监控任务名称 (add/remove)")
+    sp_mon.add_argument("--scan-path", default="/", help="扫描路径 (add)")
+    sp_mon.add_argument("--cron-minutes", type=int, default=0, help="定时周期分钟数, 0=仅手动 (add)")
+    sp_mon.add_argument("--webhook", action="store_true", help="启用 Webhook 触发 (add)")
+    sp_mon.add_argument("--delay", type=int, default=0, help="触发后延迟秒数 (add)")
+    sp_mon.add_argument("--pause", action="store_true", help="创建后暂停 (add)")
 
     # tree
     sp_tree = sp.add_parser("tree", help="目录树同步")
