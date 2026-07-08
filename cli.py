@@ -20,7 +20,7 @@
                                        文件夹监控管理
   115 tree run|status                   目录树同步
   115 browse ls|tree                    网盘浏览
-  115 share preview|receive             分享管理
+  115 share preview|receive|preview-batch  分享管理
   115 scrape identify|rename-plan|diff|jobs|providers|entries|folders|rename-warning|jobs-create|move|copy|delete|rollback|jobs-clear
                                        刮削管理
   115 watchlist list|add|remove|update  推荐清单
@@ -942,10 +942,53 @@ def cmd_share(args, c: Client):
             print(f"  {icon} {name}  (id={file_id})" + (f"  {size}" if size else ""))
 
     elif args.action == "receive":
-        resource_id = args.resource_id[0] if args.resource_id else ""
+        resource_id = args.resource_id or ""
         if not resource_id:
             sys.exit("请指定资源 ID（先 search 获取）")
         savepath = args.savepath or "/115"
+        if args.auto_path:
+            title = args.title or ""
+            if not title:
+                sys.exit("--auto-path 需要 --title 参数指定资源标题")
+            # 1. 清洗标题
+            import re as _re
+            clean = _re.sub(
+                r"\b(4K|1080P|720P|2160P|WEB-DL|WEBRIP|BLURAY|BDRIP|HDRip|HDTV|DVD|H264|H265|x264|x265|HEVC|AAC|DTS|AC3|TRUEHD|ATMOS|HDR|DOLBY|VISION|REMUX|COMPLETE|CHINESE|ENGLISH|国语|粤语|英语|日语|内封|内嵌|外挂|简繁|字幕|S\d{2}E\d{2}|EP\d{2}|第.+[季集])\b",
+                "", title, flags=_re.IGNORECASE,
+            )
+            clean = _re.sub(r"[\[\]【】()（）\-]", " ", clean).strip()
+            clean = _re.sub(r"\s+", " ", clean).strip()
+            # 去掉末尾年份
+            clean = _re.sub(r"\s+(19|20)\d{2}\s*$", "", clean).strip()
+            # 2. TMDB 查 media_type
+            try:
+                resp = c.request("GET", "/tmdb/search", {"query": clean})
+                if resp.status_code == 200:
+                    tmdb_data = resp.json()
+                    items = tmdb_data if isinstance(tmdb_data, list) else tmdb_data.get("results", tmdb_data.get("items", []))
+                    if items:
+                        mt = str(items[0].get("media_type", "") or "").strip()
+                        tmdb_title = str(items[0].get("title", "") or items[0].get("name", "") or clean).strip()
+                        tmdb_year = str(items[0].get("year", "") or "").strip()
+                        if mt == "movie":
+                            savepath = f"/电影/{tmdb_title}"
+                            if tmdb_year:
+                                savepath += f" ({tmdb_year})"
+                        elif mt == "tv":
+                            savepath = f"/剧集/{tmdb_title}"
+                        else:
+                            savepath = f"/电影/{tmdb_title}"
+                        print(f"📺 TMDB 识别: {mt} → {savepath}")
+                    else:
+                        savepath = f"/电影/{clean}"
+                        print(f"⚠️ TMDB 未识别, 默认电影: {savepath}")
+                else:
+                    savepath = f"/电影/{clean}"
+                    print(f"⚠️ TMDB 未启用, 默认电影: {savepath}")
+            except Exception as e:
+                savepath = f"/电影/{clean}"
+                print(f"⚠️ TMDB 查询失败, 默认电影: {savepath}")
+            print(f"📦 保存路径: {savepath}")
         data = c.json("POST", "/resource/jobs/create", {"resource_id": int(resource_id), "savepath": savepath})
         print(f"✅ 转存任务已创建: {json.dumps(data, ensure_ascii=False)}")
 
@@ -1561,12 +1604,14 @@ def _build_parser() -> argparse.ArgumentParser:
     # share
     sp_share = sp.add_parser("share", help="分享管理")
     sp_share.add_argument("action", choices=["preview", "receive", "preview-batch"])
-    sp_share.add_argument("url", nargs="?", help="分享链接 (preview)")
-    sp_share.add_argument("resource_id", nargs="*", help="资源 ID (receive)")
+    sp_share.add_argument("url", nargs="?", help="分享链接 (preview/preview-batch)")
     sp_share.add_argument("--provider", default="115", help="网盘提供商")
     sp_share.add_argument("--code", default="", help="提取码")
     sp_share.add_argument("--cid", default="", help="目录 ID")
     sp_share.add_argument("--savepath", default="/115", help="保存路径")
+    sp_share.add_argument("--id", dest="resource_id", default="", help="资源 ID (receive)")
+    sp_share.add_argument("--auto-path", action="store_true", help="自动根据 TMDB 识别类型确定保存路径")
+    sp_share.add_argument("--title", default="", help="资源标题 (--auto-path 需要)")
 
     # scrape
     sp_scrape = sp.add_parser("scrape", help="刮削管理")
