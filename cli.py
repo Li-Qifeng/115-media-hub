@@ -336,7 +336,7 @@ def cmd_subscribe(args, c: Client):
             "title": title.strip(),
             "keyword": title.strip(),
             "quality": args.quality,
-            "savepath": args.savepath.rstrip("/") or "/影视库/电影",
+            "savepath": args.savepath.rstrip("/") or "/电影",
             "provider": args.provider,
             "enabled": True,
             "score": 60,
@@ -715,11 +715,13 @@ def cmd_tree(args, c: Client):
         data = c.json("GET", "/logs")
         if isinstance(data, list):
             for line in data:
-                print(line)
+                text = str(line.get("text", line)) if isinstance(line, dict) else str(line)
+                print(text)
         elif isinstance(data, dict):
             lines = data.get("logs", data.get("lines", data.get("messages", [])))
             for line in lines:
-                print(line)
+                text = str(line.get("text", line)) if isinstance(line, dict) else str(line)
+                print(text)
     elif args.action == "logs-clear":
         data = c.json("POST", "/logs/clear")
         print(f"✅ 目录树日志已清除: {json.dumps(data, ensure_ascii=False)}")
@@ -734,7 +736,7 @@ def cmd_sources(args, c: Client):
             sys.exit("请指定频道 ID（--channel）")
         if not title:
             sys.exit("请指定频道名称（--title）")
-        data = c.json("POST", "/resource/sources/save", {"channel_id": channel_id, "name": title})
+        data = c.json("POST", "/resource/sources/save", {"sources": [{"channel_id": channel_id, "name": title}]})
         print(f"✅ 来源已保存: {json.dumps(data, ensure_ascii=False)}")
         return
 
@@ -996,22 +998,22 @@ def cmd_share(args, c: Client):
                         tmdb_title = str(items[0].get("title", "") or items[0].get("name", "") or clean).strip()
                         tmdb_year = str(items[0].get("year", "") or "").strip()
                         if mt == "movie":
-                            savepath = f"/影视库/电影/{tmdb_title}"
+                            savepath = f"/电影/{tmdb_title}"
                             if tmdb_year:
                                 savepath += f" ({tmdb_year})"
                         elif mt == "tv":
-                            savepath = f"/影视库/剧集/{tmdb_title}"
+                            savepath = f"/剧集/{tmdb_title}"
                         else:
-                            savepath = f"/影视库/电影/{tmdb_title}"
+                            savepath = f"/电影/{tmdb_title}"
                         print(f"📺 TMDB 识别: {mt} → {savepath}")
                     else:
-                        savepath = f"/影视库/电影/{clean}"
+                        savepath = f"/电影/{clean}"
                         print(f"⚠️ TMDB 未识别, 默认电影: {savepath}")
                 else:
-                    savepath = f"/影视库/电影/{clean}"
+                    savepath = f"/电影/{clean}"
                     print(f"⚠️ TMDB 未启用, 默认电影: {savepath}")
             except Exception as e:
-                savepath = f"/影视库/电影/{clean}"
+                savepath = f"/电影/{clean}"
                 print(f"⚠️ TMDB 查询失败, 默认电影: {savepath}")
             print(f"📦 保存路径: {savepath}")
         data = c.json("POST", "/resource/jobs/create", {"resource_id": int(resource_id), "savepath": savepath})
@@ -1559,7 +1561,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sp_sub.add_argument("name", nargs="*", help="订阅名称 (add/remove/start)")
     sp_sub.add_argument("--type", default="movie", choices=["movie", "tv"], help="媒体类型")
     sp_sub.add_argument("--quality", default="balanced", help="质量偏好 (4K/1080p/720p/balanced)")
-    sp_sub.add_argument("--savepath", default="/影视库/电影", help="115 保存路径")
+    sp_sub.add_argument("--savepath", default="/电影", help="115 保存路径")
     sp_sub.add_argument("--provider", default="115", choices=["115", "quark"], help="网盘提供商")
     sp_sub.add_argument("--link", default="", help="资源链接 (start-with-link)")
     sp_sub.add_argument("--name", default="", help="订阅名称 (rebuild/episodes)")
