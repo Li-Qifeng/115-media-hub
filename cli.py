@@ -55,8 +55,12 @@ import os
 import subprocess
 import sys
 from typing import Any, Dict, Optional
+from urllib.parse import urlparse
 
 import httpx
+
+MH_USERNAME = os.environ.get("MH_USERNAME", "admin")
+MH_PASSWORD = os.environ.get("MH_PASSWORD", "admin123")
 
 API_BASE = os.environ.get("MH_API_BASE", "http://127.0.0.1:18080")
 COOKIE_FILE = os.environ.get("MH_COOKIE_FILE", "/tmp/.115_cookies.txt")
@@ -82,7 +86,7 @@ class Client:
                     for cookie_data in jar:
                         self._session.cookies.set(
                             cookie_data["name"], cookie_data["value"],
-                            domain=cookie_data.get("domain", "127.0.0.1"),
+                            domain=cookie_data.get("domain", urlparse(self.base_url).hostname or "127.0.0.1"),
                             path=cookie_data.get("path", "/"),
                         )
             except Exception:
@@ -97,12 +101,13 @@ class Client:
         os.makedirs(os.path.dirname(COOKIE_FILE) or ".", exist_ok=True)
         with open(COOKIE_FILE, "w") as f:
             json.dump(jar, f)
+        os.chmod(COOKIE_FILE, 0o600)
 
     def _login_if_needed(self):
         session = self._ensure_session()
         r = session.get("/status-summary")
         if r.status_code == 401:
-            r = session.post("/login", json={"username": "admin", "password": "admin123"})
+            r = session.post("/login", json={"username": MH_USERNAME, "password": MH_PASSWORD})
             if r.status_code != 200:
                 sys.exit(f"登录失败 (HTTP {r.status_code}): {r.text[:200]}")
             self._save_cookies()
@@ -387,16 +392,16 @@ def cmd_subscribe(args, c: Client):
         print(f"✅ 订阅日志已清除: {json.dumps(data, ensure_ascii=False)}")
 
     elif args.action == "rebuild":
-        name = args.name or ""
+        name = args.task_name or ""
         if not name:
-            sys.exit("请指定订阅名称（--name 参数）")
+            sys.exit("请指定订阅名称（--task-name 参数）")
         data = c.json("POST", "/subscription/rebuild", {"name": name})
         print(f"✅ 订阅已重建: {json.dumps(data, ensure_ascii=False)}")
 
     elif args.action == "episodes":
-        name = args.name or ""
+        name = args.task_name or ""
         if not name:
-            sys.exit("请指定订阅名称（--name 参数）")
+            sys.exit("请指定订阅名称（--task-name 参数）")
         data = c.json("GET", "/subscription/episodes", {"name": name})
         episodes = data if isinstance(data, list) else data.get("episodes", data.get("items", []))
         if not episodes:
@@ -432,26 +437,26 @@ def cmd_jobs(args, c: Client):
         print(f"✅ 已完成任务已清理: {json.dumps(data, ensure_ascii=False)}")
     elif args.action == "retry":
         if not args.job_id:
-            sys.exit("请指定任务 ID")
+            sys.exit("请指定任务 ID（--job-id）")
         data = c.json("POST", "/resource/jobs/retry", {"job_id": int(args.job_id[0])})
         print(f"✅ 已重试: {json.dumps(data, ensure_ascii=False)}")
     elif args.action == "create":
-        resource_id = args.resource_id[0] if args.resource_id else ""
+        resource_id = args.resource_id or ""
         if not resource_id:
-            sys.exit("请指定资源 ID（先 search 获取）")
+            sys.exit("请指定资源 ID（--resource-id，先 search 获取）")
         savepath = args.savepath or "/115"
         data = c.json("POST", "/resource/jobs/create", {"resource_id": int(resource_id), "savepath": savepath})
         print(f"✅ 转存任务已创建: {json.dumps(data, ensure_ascii=False)}")
     elif args.action == "refresh":
-        job_id = args.job_id[0] if args.job_id else ""
+        job_id = args.job_id or ""
         if not job_id:
-            sys.exit("请指定任务 ID")
+            sys.exit("请指定任务 ID（--job-id）")
         data = c.json("POST", "/resource/jobs/refresh", {"job_id": int(job_id)})
         print(f"✅ 已触发刷新: {json.dumps(data, ensure_ascii=False)}")
     elif args.action == "cancel":
-        job_id = args.job_id[0] if args.job_id else ""
+        job_id = args.job_id or ""
         if not job_id:
-            sys.exit("请指定任务 ID")
+            sys.exit("请指定任务 ID（--job-id）")
         data = c.json("POST", "/resource/jobs/cancel", {"job_id": int(job_id)})
         print(f"✅ 已取消任务: {json.dumps(data, ensure_ascii=False)}")
 
@@ -586,9 +591,10 @@ def cmd_tmdb(args, c: Client):
         print(fmt_tmdb_items(items))
 
     elif args.action == "detail":
-        if not args.tmdb_id:
-            sys.exit("请指定 TMDB ID")
-        data = c.json("GET", "/tmdb/detail", {"tmdb_id": int(args.tmdb_id[0])})
+        tmdb_id = args.tmdb_id or ""
+        if not tmdb_id:
+            sys.exit("请指定 TMDB ID（--tmdb-id）")
+        data = c.json("GET", "/tmdb/detail", {"tmdb_id": int(tmdb_id)})
         print(fmt_json(data))
 
     elif args.action == "genres":
@@ -768,8 +774,7 @@ else:
         keyword = " ".join(args.keyword) if args.keyword else ""
         if not keyword:
             sys.exit("请指定搜索关键词")
-        import shlex
-        safe_kw = shlex.quote(keyword)
+        safe_kw = json.dumps(keyword)
         code = f"""
 from app.providers.discovery_registry import search_all
 result = search_all({safe_kw}, limit=10)
@@ -971,7 +976,7 @@ def cmd_share(args, c: Client):
     elif args.action == "receive":
         resource_id = args.resource_id or ""
         if not resource_id:
-            sys.exit("请指定资源 ID（先 search 获取）")
+            sys.exit("请指定资源 ID（--resource-id，先 search 获取）")
         savepath = args.savepath or "/115"
         if args.auto_path:
             title = args.title or ""
@@ -1047,9 +1052,9 @@ def cmd_scrape(args, c: Client):
         print(fmt_json(data))
 
     elif args.action == "diff":
-        job_id = args.job_id[0] if args.job_id else ""
+        job_id = args.job_id or ""
         if not job_id:
-            sys.exit("请指定 Job ID")
+            sys.exit("请指定 Job ID（--job-id）")
         data = c.json("GET", "/scraper/jobs/state", {"limit": 50})
         jobs = data if isinstance(data, list) else data.get("jobs", data.get("items", []))
         for j in jobs:
@@ -1170,9 +1175,9 @@ def cmd_scrape(args, c: Client):
         print(f"✅ 删除完成: {json.dumps(data, ensure_ascii=False)}")
 
     elif args.action == "rollback":
-        job_id = args.job_id[0] if args.job_id else ""
+        job_id = args.job_id or ""
         if not job_id:
-            sys.exit("请指定 Job ID")
+            sys.exit("请指定 Job ID（--job-id）")
         data = c.json("POST", f"/scraper/jobs/{job_id}/rollback")
         print(f"✅ 回滚完成: {json.dumps(data, ensure_ascii=False)}")
 
@@ -1343,7 +1348,7 @@ def cmd_resource(args, c: Client):
             print(f"✅ 已删除快捷链接「{name}」")
 
     elif args.action == "delete":
-        resource_id = args.resource_id[0] if args.resource_id else ""
+        resource_id = args.resource_id or ""
         if not resource_id:
             sys.exit("请指定资源 ID")
         confirm = args.yes or input(f"确定要删除资源 #{resource_id}？(y/N): ").lower() == "y"
@@ -1564,15 +1569,15 @@ def _build_parser() -> argparse.ArgumentParser:
     sp_sub.add_argument("--savepath", default="/电影", help="115 保存路径")
     sp_sub.add_argument("--provider", default="115", choices=["115", "quark"], help="网盘提供商")
     sp_sub.add_argument("--link", default="", help="资源链接 (start-with-link)")
-    sp_sub.add_argument("--name", default="", help="订阅名称 (rebuild/episodes)")
+    sp_sub.add_argument("--task-name", default="", help="订阅名称 (rebuild/episodes)")
 
     # jobs
     sp_jobs = sp.add_parser("jobs", help="管理资源任务")
     sp_jobs.add_argument("action", choices=["list", "clear", "clear_completed", "clear-completed", "retry", "create", "refresh", "cancel"])
-    sp_jobs.add_argument("job_id", nargs="*", help="任务 ID (retry/refresh/cancel)")
+    sp_jobs.add_argument("--job-id", default="", help="任务 ID (retry/refresh/cancel)")
     sp_jobs.add_argument("--limit", type=int, default=20, help="列表条数")
     sp_jobs.add_argument("--status", default="", help="过滤状态 (pending/submitted/completed/failed)")
-    sp_jobs.add_argument("resource_id", nargs="*", help="资源 ID (create)")
+    sp_jobs.add_argument("--resource-id", default="", help="资源 ID (create)")
     sp_jobs.add_argument("--savepath", default="/115", help="保存路径 (create)")
 
     # settings
@@ -1600,7 +1605,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sp_tmdb = sp.add_parser("tmdb", help="TMDB 搜索")
     sp_tmdb.add_argument("action", choices=["search", "popular", "trending", "detail", "genres", "discover"])
     sp_tmdb.add_argument("keyword", nargs="*", help="搜索关键词 (search)")
-    sp_tmdb.add_argument("tmdb_id", nargs="*", help="TMDB ID (detail)")
+    sp_tmdb.add_argument("--tmdb-id", default="", help="TMDB ID (detail)")
     sp_tmdb.add_argument("--page", type=int, default=1, help="页码")
 
     # sources (DiscoveryProvider)
@@ -1657,7 +1662,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sp_scrape = sp.add_parser("scrape", help="刮削管理")
     sp_scrape.add_argument("action", choices=["identify", "rename-plan", "diff", "jobs", "providers", "entries", "folders", "rename", "rename-warning", "jobs-create", "move", "copy", "delete", "rollback", "jobs-clear"])
     sp_scrape.add_argument("path", nargs="*", help="文件路径 (identify/rename-plan/move/copy/delete/rename/rename-warning/jobs-create)")
-    sp_scrape.add_argument("job_id", nargs="*", help="Job ID (diff/rollback)")
+    sp_scrape.add_argument("--job-id", default="", help="Job ID (diff/rollback)")
     sp_scrape.add_argument("--provider", default="", help="提供商 (jobs/move/copy/delete/rename)")
     sp_scrape.add_argument("--limit", type=int, default=20, help="列表条数 (jobs)")
     sp_scrape.add_argument("--dest", default="", help="目标路径 (move/copy)")
