@@ -1874,6 +1874,11 @@ def _build_parser() -> argparse.ArgumentParser:
                        help="状态 (update)")
     sp_wl.add_argument("--title", default="", help="标题 (add)")
     sp_wl.add_argument("--type", default="movie", choices=["movie", "tv"], help="媒体类型 (add)")
+    sp_wl.add_argument("--original-title", default="", help="原始标题 (add)")
+    sp_wl.add_argument("--year", default="", help="年份 (add)")
+    sp_wl.add_argument("--poster-url", default="", help="海报 URL (add)")
+    sp_wl.add_argument("--overview", default="", help="简介 (add)")
+    sp_wl.add_argument("--vote-average", type=float, default=0.0, help="评分 (add)")
 
     # strm
     sp_strm = sp.add_parser("strm", help="STRM 管理")
