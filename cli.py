@@ -357,7 +357,7 @@ def cmd_subscribe(args, c: Client):
             "title": (args.title or title).strip(),
             "keyword": title.strip(),
             "quality": args.quality,
-            "savepath": args.savepath.rstrip("/") or "/电影",
+            "savepath": _get_default_savepath(c.json("GET", "/get_settings"), args.type or "movie") if not args.savepath else args.savepath.rstrip("/"),
             "provider": args.provider,
             "season": args.season,
             "total_episodes": args.total_episodes,
@@ -482,7 +482,8 @@ def cmd_jobs(args, c: Client):
         resource_id = args.resource_id or ""
         if not resource_id:
             sys.exit("请指定资源 ID（--resource-id，先 search 获取）")
-        savepath = args.savepath or "/115"
+        _cfg = c.json("GET", "/get_settings") if not args.savepath else None
+        savepath = args.savepath or _get_default_savepath(_cfg or {}, "movie")
         payload = {"resource_id": int(resource_id), "savepath": savepath}
         if args.receive_code:
             payload["receive_code"] = args.receive_code
@@ -510,18 +511,64 @@ def cmd_jobs(args, c: Client):
         print(f"✅ 已取消任务: {json.dumps(data, ensure_ascii=False)}")
 
 
+def _get_default_savepath(cfg: dict, media_type: str = "movie") -> str:
+    """从 resource_favorite_dirs 按媒体类型匹配默认路径"""
+    if not isinstance(cfg, dict):
+        return "/电影" if media_type == "movie" else "/剧集"
+    fav = cfg.get("resource_favorite_dirs", {})
+    all_dirs = []
+    for provider_dirs in fav.values() if isinstance(fav, dict) else []:
+        if isinstance(provider_dirs, list):
+            all_dirs.extend(provider_dirs)
+    if media_type == "tv":
+        tv_keywords = ["电视剧", "剧集", "tv", "连续剧", "动漫", "动画"]
+        for d in all_dirs:
+            name = (d.get("name", "") or "").lower()
+            for kw in tv_keywords:
+                if kw in name:
+                    return d.get("path", "")
+    movie_keywords = ["电影", "movie", "影片", "影视"]
+    for d in all_dirs:
+        name = (d.get("name", "") or "").lower()
+        for kw in movie_keywords:
+            if kw in name:
+                return d.get("path", "")
+    if all_dirs:
+        return all_dirs[0].get("path", "")
+    return "/电影" if media_type == "movie" else "/剧集"
+
+
 def cmd_settings(args, c: Client):
     """查看/修改配置"""
     if args.favorite_dirs_115 is not None or args.favorite_dirs_quark is not None:
         cfg = c.json("GET", "/get_settings")
+        fav = cfg.setdefault("resource_favorite_dirs", {"115": [], "quark": [], "tianyi": [], "123pan": [], "aliyun": []})
         if args.favorite_dirs_115 is not None:
-            dirs = [d.strip() for d in args.favorite_dirs_115.split(",") if d.strip()]
-            cfg["resource_favorite_dirs_115"] = "\n".join(dirs)
-            print(f"✅ 115 常用目录: {len(dirs)} 个")
+            items = []
+            for token in args.favorite_dirs_115.split(","):
+                token = token.strip()
+                if not token:
+                    continue
+                if "=" in token:
+                    n, p = token.split("=", 1)
+                    items.append({"name": n.strip(), "path": p.strip()})
+                else:
+                    items.append({"name": token.split("/")[-1], "path": token})
+            fav["115"] = items
+            print(f"✅ 115 常用目录: {len(items)} 个")
         if args.favorite_dirs_quark is not None:
-            dirs = [d.strip() for d in args.favorite_dirs_quark.split(",") if d.strip()]
-            cfg["resource_favorite_dirs_quark"] = "\n".join(dirs)
-            print(f"✅ Quark 常用目录: {len(dirs)} 个")
+            items = []
+            for token in args.favorite_dirs_quark.split(","):
+                token = token.strip()
+                if not token:
+                    continue
+                if "=" in token:
+                    n, p = token.split("=", 1)
+                    items.append({"name": n.strip(), "path": p.strip()})
+                else:
+                    items.append({"name": token.split("/")[-1], "path": token})
+            fav["quark"] = items
+            print(f"✅ Quark 常用目录: {len(items)} 个")
         c.json("POST", "/save_settings", cfg)
         print("✅ 配置已保存")
         return
@@ -1062,7 +1109,8 @@ def cmd_share(args, c: Client):
         resource_id = args.resource_id or ""
         if not resource_id:
             sys.exit("请指定资源 ID（--resource-id，先 search 获取）")
-        savepath = args.savepath or "/115"
+        _cfg = c.json("GET", "/get_settings") if not args.savepath else None
+        savepath = args.savepath or _get_default_savepath(_cfg or {}, "movie")
         if args.auto_path:
             title = args.title or ""
             if not title:
