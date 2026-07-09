@@ -2,38 +2,40 @@
 """
 |115 — 115 Media Hub CLI 工具
 
-用法:
+|用法:
   115 status                            系统状态
   115 search <关键词>                    搜索资源
-  115 channels sync|list|classify|more  管理资源频道
-  115 subscribe list|add|remove|start|stop|status|logs|rebuild|episodes|start-with-link
+  115 channels sync|list|classify|more|sync-names|sync-cancel
+                                       管理资源频道
+  115 subscribe list|add|remove|start|stop|status|logs|logs-clear|rebuild|episodes|start-with-link
                                        管理订阅
   115 jobs list|clear|retry|create|refresh|cancel
                                        管理资源任务
   115 settings [key=value...]           查看/修改配置
   115 logs [tail]                       查看系统日志
-  115 cookies check|status|test          检查 Cookie 状态
+  115 cookies check|status|test         检查 Cookie 状态
   115 sign run|status                   115 每日签到
   115 tmdb search|popular|trending|detail|genres|discover
                                        TMDB 搜索
-  115 monitor list|status|start|stop|logs|add|remove
+  115 monitor list|status|start|stop|logs|logs-clear|add|remove|userscript-jobs
                                        文件夹监控管理
-  115 tree run|status                   目录树同步
-  115 browse ls|tree                    网盘浏览
+  115 tree run|status|logs|logs-clear  目录树同步
+  115 browse ls|tree|folders|create-folder
+                                       网盘浏览
   115 share preview|receive|preview-batch  分享管理
-  115 scrape identify|rename-plan|diff|jobs|providers|entries|folders|rename-warning|jobs-create|move|copy|delete|rollback|jobs-clear
+  115 scrape identify|rename-plan|rename|diff|jobs|providers|entries|folders|rename-warning|jobs-create|move|copy|delete|rollback|jobs-clear
                                        刮削管理
   115 watchlist list|add|remove|update  推荐清单
   115 strm orphans|cleanup|dirs         STRM 管理
   115 resource import|preview|quick-links|delete
                                        资源中心管理
   115 api <method> <path> [body]        通用 API 调用
-  115 providers                          列出网盘提供商
-  115 sources list|search|test          发现源管理
-  115 version                            版本信息
-  115 health                             全链路健康检查
-  115 stats                              统计摘要
-  115 daemon status|logs|restart         容器管理
+  115 providers                         列出网盘提供商
+  115 sources list|search|test|save     发现源管理
+  115 version                           版本信息
+  115 health                            全链路健康检查
+  115 stats                             统计摘要
+  115 daemon status|logs|restart        容器管理
 
 示例:
   115 status
@@ -709,10 +711,33 @@ def cmd_tree(args, c: Client):
             print(f"  步骤: {step}  ({pct}%)")
             if detail:
                 print(f"  详情: {detail}")
+    elif args.action == "logs":
+        data = c.json("GET", "/logs")
+        if isinstance(data, list):
+            for line in data:
+                print(line)
+        elif isinstance(data, dict):
+            lines = data.get("logs", data.get("lines", data.get("messages", [])))
+            for line in lines:
+                print(line)
+    elif args.action == "logs-clear":
+        data = c.json("POST", "/logs/clear")
+        print(f"✅ 目录树日志已清除: {json.dumps(data, ensure_ascii=False)}")
 
 
 def cmd_sources(args, c: Client):
-    """管理发现源 (DiscoveryProvider)，通过容器内 Python 执行"""
+    """管理发现源 (DiscoveryProvider)"""
+    if args.action == "save":
+        channel_id = args.channel or ""
+        title = args.title or ""
+        if not channel_id:
+            sys.exit("请指定频道 ID（--channel）")
+        if not title:
+            sys.exit("请指定频道名称（--title）")
+        data = c.json("POST", "/resource/sources/save", {"channel_id": channel_id, "name": title})
+        print(f"✅ 来源已保存: {json.dumps(data, ensure_ascii=False)}")
+        return
+
     container = os.environ.get("MH_CONTAINER", "115-media-hub")
 
     if args.action == "list":
@@ -1089,6 +1114,17 @@ def cmd_scrape(args, c: Client):
         provider = args.provider or "115"
         data = c.json("POST", f"/scraper/{provider}/rename-warning", {"path": path})
         print(fmt_json(data))
+
+    elif args.action == "rename":
+        path = " ".join(args.path) if args.path else ""
+        if not path:
+            sys.exit("请指定文件路径")
+        name = args.name or ""
+        if not name:
+            sys.exit("请指定新名称（--name）")
+        provider = args.provider or "115"
+        data = c.json("POST", f"/scraper/{provider}/rename", {"path": path, "name": name})
+        print(f"✅ 已重命名: {json.dumps(data, ensure_ascii=False)}")
 
     elif args.action == "jobs-create":
         path = " ".join(args.path) if args.path else ""
@@ -1567,9 +1603,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # sources (DiscoveryProvider)
     sp_src = sp.add_parser("sources", help="管理发现源 (DiscoveryProvider)")
-    sp_src.add_argument("action", choices=["list", "search", "test"])
+    sp_src.add_argument("action", choices=["list", "search", "test", "save"])
     sp_src.add_argument("keyword", nargs="*", help="搜索关键词 (search)")
     sp_src.add_argument("--name", help="Provider 名称 (test)")
+    sp_src.add_argument("--channel", default="", help="频道 ID (save)")
+    sp_src.add_argument("--title", default="", help="频道名称 (save)")
 
     # monitor
     sp_mon = sp.add_parser("monitor", help="文件夹监控管理")
@@ -1583,7 +1621,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # tree
     sp_tree = sp.add_parser("tree", help="目录树同步")
-    sp_tree.add_argument("action", choices=["run", "status"])
+    sp_tree.add_argument("action", choices=["run", "status", "logs", "logs-clear"])
 
     # api
     sp_api = sp.add_parser("api", help="通用 API 调用")
@@ -1615,12 +1653,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # scrape
     sp_scrape = sp.add_parser("scrape", help="刮削管理")
-    sp_scrape.add_argument("action", choices=["identify", "rename-plan", "diff", "jobs", "providers", "entries", "folders", "rename-warning", "jobs-create", "move", "copy", "delete", "rollback", "jobs-clear"])
-    sp_scrape.add_argument("path", nargs="*", help="文件路径 (identify/rename-plan/move/copy/delete/rename-warning/jobs-create)")
+    sp_scrape.add_argument("action", choices=["identify", "rename-plan", "diff", "jobs", "providers", "entries", "folders", "rename", "rename-warning", "jobs-create", "move", "copy", "delete", "rollback", "jobs-clear"])
+    sp_scrape.add_argument("path", nargs="*", help="文件路径 (identify/rename-plan/move/copy/delete/rename/rename-warning/jobs-create)")
     sp_scrape.add_argument("job_id", nargs="*", help="Job ID (diff/rollback)")
-    sp_scrape.add_argument("--provider", default="", help="提供商 (jobs/move/copy/delete)")
+    sp_scrape.add_argument("--provider", default="", help="提供商 (jobs/move/copy/delete/rename)")
     sp_scrape.add_argument("--limit", type=int, default=20, help="列表条数 (jobs)")
     sp_scrape.add_argument("--dest", default="", help="目标路径 (move/copy)")
+    sp_scrape.add_argument("--name", default="", help="新名称 (rename)")
     sp_scrape.add_argument("--cid", default="0", help="目录 ID (folders)")
     sp_scrape.add_argument("--yes", action="store_true", help="跳过确认 (delete)")
 
