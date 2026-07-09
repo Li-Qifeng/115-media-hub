@@ -207,8 +207,8 @@ async def move_scraper_entries_endpoint(provider: str, request: Request) -> Dict
             dest_ids = await asyncio.to_thread(_resolve_path_to_entry_ids, provider, dest)
             if dest_ids:
                 target_cid = dest_ids[0]
-        except Exception:
-            pass
+        except Exception as exc:
+            return JSONResponse(status_code=400, content={"ok": False, "msg": f"目标路径解析失败: {exc}"})
     if not target_cid:
         return JSONResponse(status_code=400, content={"ok": False, "msg": "目标目录不能为空"})
     source_cid = str(data.get("source_cid", "") or "").strip()
@@ -239,8 +239,8 @@ async def copy_scraper_entries_endpoint(provider: str, request: Request) -> Dict
             dest_ids = await asyncio.to_thread(_resolve_path_to_entry_ids, provider, dest)
             if dest_ids:
                 target_cid = dest_ids[0]
-        except Exception:
-            pass
+        except Exception as exc:
+            return JSONResponse(status_code=400, content={"ok": False, "msg": f"目标路径解析失败: {exc}"})
     if not target_cid:
         return JSONResponse(status_code=400, content={"ok": False, "msg": "目标目录不能为空"})
     source_cid = str(data.get("source_cid", "") or "").strip()
