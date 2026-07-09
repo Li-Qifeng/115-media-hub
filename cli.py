@@ -715,11 +715,13 @@ def cmd_tree(args, c: Client):
         data = c.json("GET", "/logs")
         if isinstance(data, list):
             for line in data:
-                print(line)
+                text = str(line.get("text", line)) if isinstance(line, dict) else str(line)
+                print(text)
         elif isinstance(data, dict):
             lines = data.get("logs", data.get("lines", data.get("messages", [])))
             for line in lines:
-                print(line)
+                text = str(line.get("text", line)) if isinstance(line, dict) else str(line)
+                print(text)
     elif args.action == "logs-clear":
         data = c.json("POST", "/logs/clear")
         print(f"✅ 目录树日志已清除: {json.dumps(data, ensure_ascii=False)}")
@@ -734,7 +736,7 @@ def cmd_sources(args, c: Client):
             sys.exit("请指定频道 ID（--channel）")
         if not title:
             sys.exit("请指定频道名称（--title）")
-        data = c.json("POST", "/resource/sources/save", {"channel_id": channel_id, "name": title})
+        data = c.json("POST", "/resource/sources/save", {"sources": [{"channel_id": channel_id, "name": title}]})
         print(f"✅ 来源已保存: {json.dumps(data, ensure_ascii=False)}")
         return
 

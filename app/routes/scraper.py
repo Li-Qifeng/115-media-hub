@@ -1,4 +1,5 @@
 import asyncio
+import os
 from typing import Any, Dict, List
 
 from fastapi import APIRouter, Request
@@ -9,10 +10,8 @@ from ..core import (
     get_config,
     _get_provider_or_none,
     http_request_json,
-    normalize_115_cid,
     normalize_relative_path,
     parse_int,
-    safe_json_loads,
     throttle_115_api_requests,
 )
 from ..services.scraper import (
@@ -57,10 +56,8 @@ def _resolve_path_to_entry_ids(provider: str, path: str) -> List[str]:
     if not provider_obj:
         raise RuntimeError(f"提供商 {provider} 不存在")
 
-    import os as _os
-
-    parent_rel = normalize_relative_path(_os.path.dirname(normalized_path))
-    file_name = str(_os.path.basename(normalized_path) or "").strip()
+    parent_rel = normalize_relative_path(os.path.dirname(normalized_path))
+    file_name = str(os.path.basename(normalized_path) or "").strip()
     if not file_name:
         raise RuntimeError("路径必须包含文件名或目录名")
 
