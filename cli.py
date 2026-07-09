@@ -372,7 +372,7 @@ def cmd_subscribe(args, c: Client):
     elif args.action == "start":
         name = " ".join(args.name) if args.name else ""
         if name:
-            data = c.json("POST", "/subscription/start", {"task_name": name})
+            data = c.json("POST", "/subscription/start", {"name": name})
         else:
             data = c.json("POST", "/subscription/start", {})
         print(f"✅ 订阅已触发: {json.dumps(data, ensure_ascii=False)}")
@@ -599,7 +599,10 @@ def cmd_tmdb(args, c: Client):
         tmdb_id = args.tmdb_id or ""
         if not tmdb_id:
             sys.exit("请指定 TMDB ID（--tmdb-id）")
-        data = c.json("GET", "/tmdb/detail", {"tmdb_id": int(tmdb_id)})
+        media_type = args.media_type or ""
+        if not media_type:
+            sys.exit("请指定媒体类型（--media-type movie|tv）")
+        data = c.json("GET", "/tmdb/detail", {"tmdb_id": int(tmdb_id), "media_type": media_type})
         print(fmt_json(data))
 
     elif args.action == "genres":
@@ -886,7 +889,7 @@ def cmd_browse(args, c: Client):
     provider = args.provider or "115"
     cid = args.cid or "0"
     if args.action == "ls":
-        data = c.json("GET", "/resource/browse", {"provider_name": provider, "cid": cid})
+        data = c.json("GET", "/resource/browse", {"provider": provider, "cid": cid})
         entries = data if isinstance(data, list) else data.get("entries", data.get("items", []))
         if not entries:
             print("(空目录)")
@@ -902,7 +905,7 @@ def cmd_browse(args, c: Client):
             print(f"  {icon} {name}  (id={file_id})" + (f"  {size}" if size else ""))
 
     elif args.action == "tree":
-        data = c.json("GET", "/resource/browse", {"provider_name": provider, "cid": cid, "folders_only": "1"})
+        data = c.json("GET", "/resource/browse", {"provider": provider, "cid": cid, "folders_only": "1"})
         entries = data if isinstance(data, list) else data.get("entries", data.get("items", []))
         if not entries:
             print("(空目录)")
@@ -940,7 +943,7 @@ def _print_tree(entries: list, provider: str, c: Client, prefix: str = "", depth
         connector = "└── " if is_last else "├── "
         print(f"{prefix}{connector}{name}  (id={file_id})")
         if depth < 3:
-            sub = c.json("GET", "/resource/browse", {"provider_name": provider, "cid": file_id, "folders_only": "1"})
+            sub = c.json("GET", "/resource/browse", {"provider": provider, "cid": file_id, "folders_only": "1"})
             sub_items = sub if isinstance(sub, list) else sub.get("entries", sub.get("items", []))
             if sub_items:
                 sub_prefix = prefix + ("    " if is_last else "│   ")
@@ -958,12 +961,12 @@ def cmd_share(args, c: Client):
         provider = args.provider or "115"
         code = args.code or ""
         cid = args.cid or ""
-        params = {"link_url": url, "receive_code": code, "cid": cid}
+        body = {"link_url": url, "receive_code": code, "cid": cid}
         try:
-            data = c.json("GET", f"/resource/browse/{provider}/share_entries", params)
+            data = c.json("POST", f"/resource/browse/{provider}/share_entries_preview", body)
         except SystemExit:
-            # Try direct share endpoint
-            data = c.json("GET", f"/resource/{provider}/share_entries", params)
+            # Try direct provider endpoint
+            data = c.json("POST", f"/resource/{provider}/share_entries_preview", body)
         entries = data if isinstance(data, list) else data.get("entries", data.get("items", []))
         summary = data.get("summary", {}) if isinstance(data, dict) else {}
         print(f"📦 分享内容 ({url[:60]})")
@@ -1123,8 +1126,11 @@ def cmd_scrape(args, c: Client):
         path = " ".join(args.path) if args.path else ""
         if not path:
             sys.exit("请指定文件路径")
+        new_path = args.new_path or ""
+        if not new_path:
+            sys.exit("请指定新路径（--new-path）")
         provider = args.provider or "115"
-        data = c.json("POST", f"/scraper/{provider}/rename-warning", {"path": path})
+        data = c.json("POST", f"/scraper/{provider}/rename-warning", {"old_path": path, "new_path": new_path})
         print(fmt_json(data))
 
     elif args.action == "rename":
@@ -1142,6 +1148,9 @@ def cmd_scrape(args, c: Client):
         path = " ".join(args.path) if args.path else ""
         if not path:
             sys.exit("请指定文件路径")
+        # NOTE: API expects full plan payload {"plan": {"actions": [...]}}.
+        # Simple path-only create is a complex multi-step operation
+        # that must go through the web UI or be done programmatically.
         data = c.json("POST", "/scraper/jobs/create", {"path": path})
         print(f"✅ 刮削任务已创建: {json.dumps(data, ensure_ascii=False)}")
 
@@ -1205,10 +1214,10 @@ def cmd_watchlist(args, c: Client):
         print()
         for item in items:
             title = str(item.get("title", "") or item.get("name", "") or "").strip()
-            tmdb_id = item.get("tmdb_id", item.get("id", "?"))
+            item_id = item.get("id", "?")
             status = item.get("status", "pending")
-            status_icon = {"watching": "📺", "completed": "✅", "pending": "⏳", "dropped": "⏹️"}.get(status, "⏳")
-            print(f"  {status_icon} {title}  (TMDB:{tmdb_id})  [{status}]")
+            status_icon = {"want": "⏳", "subscribed": "📺", "done": "✅"}.get(status, "⏳")
+            print(f"  {status_icon} {title}  (id={item_id})  [{status}]")
 
     elif args.action == "add":
         tmdb_id = args.tmdb_id[0] if args.tmdb_id else ""
@@ -1221,19 +1230,19 @@ def cmd_watchlist(args, c: Client):
         print(f"✅ 已添加到推荐清单: {json.dumps(data, ensure_ascii=False)}")
 
     elif args.action == "remove":
-        tmdb_id = args.tmdb_id[0] if args.tmdb_id else ""
-        if not tmdb_id:
-            sys.exit("请指定 TMDB ID")
-        data = c.json("POST", "/recommendation/watchlist/remove", {"tmdb_id": int(tmdb_id)})
+        item_id = args.id or ""
+        if not item_id:
+            sys.exit("请指定记录 ID（--id，通过 list 获取）")
+        data = c.json("POST", "/recommendation/watchlist/remove", {"id": int(item_id)})
         print(f"✅ 已从推荐清单移除: {json.dumps(data, ensure_ascii=False)}")
 
     elif args.action == "update":
-        tmdb_id = args.tmdb_id[0] if args.tmdb_id else ""
-        if not tmdb_id:
-            sys.exit("请指定 TMDB ID")
-        status = args.status or "completed"
+        item_id = args.id or ""
+        if not item_id:
+            sys.exit("请指定记录 ID（--id，通过 list 获取）")
+        status = args.status or "done"
         data = c.json("POST", "/recommendation/watchlist/update_status",
-                       {"tmdb_id": int(tmdb_id), "status": status})
+                       {"id": int(item_id), "status": status})
         print(f"✅ 状态已更新: {json.dumps(data, ensure_ascii=False)}")
 
 
@@ -1624,6 +1633,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sp_tmdb.add_argument("action", choices=["search", "popular", "trending", "detail", "genres", "discover"])
     sp_tmdb.add_argument("keyword", nargs="*", help="搜索关键词 (search)")
     sp_tmdb.add_argument("--tmdb-id", default="", help="TMDB ID (detail)")
+    sp_tmdb.add_argument("--media-type", default="", choices=["movie", "tv"], help="媒体类型 (detail: movie/tv)")
     sp_tmdb.add_argument("--page", type=int, default=1, help="页码")
 
     # sources (DiscoveryProvider)
@@ -1685,6 +1695,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sp_scrape.add_argument("--limit", type=int, default=20, help="列表条数 (jobs)")
     sp_scrape.add_argument("--dest", default="", help="目标路径 (move/copy)")
     sp_scrape.add_argument("--name", default="", help="新名称 (rename)")
+    sp_scrape.add_argument("--new-path", default="", help="新路径 (rename-warning)")
     sp_scrape.add_argument("--cid", default="0", help="目录 ID (folders)")
     sp_scrape.add_argument("--yes", action="store_true", help="跳过确认 (delete)")
 
@@ -1692,8 +1703,9 @@ def _build_parser() -> argparse.ArgumentParser:
     sp_wl = sp.add_parser("watchlist", help="推荐清单")
     sp_wl.add_argument("action", choices=["list", "add", "remove", "update"])
     sp_wl.add_argument("tmdb_id", nargs="*", help="TMDB ID (add/remove/update)")
-    sp_wl.add_argument("--status", default="completed",
-                       choices=["watching", "completed", "pending", "dropped"],
+    sp_wl.add_argument("--id", default="", help="DB 记录 ID (remove/update, 通过 list 获取)")
+    sp_wl.add_argument("--status", default="done",
+                       choices=["want", "subscribed", "done"],
                        help="状态 (update)")
     sp_wl.add_argument("--title", default="", help="标题 (add)")
     sp_wl.add_argument("--type", default="movie", choices=["movie", "tv"], help="媒体类型 (add)")
