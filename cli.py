@@ -335,25 +335,28 @@ def cmd_subscribe(args, c: Client):
         for t in tasks:
             if str(t.get("name", "") or "").strip() == title.strip():
                 sys.exit(f"订阅「{title}」已存在")
+        # 解析别名
+        aliases_list = [a.strip() for a in args.aliases.split(",") if a.strip()] if args.aliases else []
+        exclude_list = [k.strip() for k in args.exclude_keywords.split(",") if k.strip()] if args.exclude_keywords else []
         new_task = {
             "name": title.strip(),
             "media_type": args.type,
-            "title": title.strip(),
+            "title": (args.title or title).strip(),
             "keyword": title.strip(),
             "quality": args.quality,
             "savepath": args.savepath.rstrip("/") or "/电影",
             "provider": args.provider,
+            "season": args.season,
+            "total_episodes": args.total_episodes,
+            "aliases": aliases_list,
+            "exclude_keywords": exclude_list,
+            "min_score": args.min_score,
+            "anime_mode": args.anime_mode,
+            "strict_title_match": args.strict_match,
+            "cron_minutes": args.cron_minutes,
             "enabled": True,
-            "score": 60,
-            "tmdb_enabled": False,
-            "schedule_weekdays": [],
-            "schedule_start_time": "00:00",
-            "schedule_end_time": "23:59",
-            "schedule_interval_minutes": 120,
         }
-        tasks.append(new_task)
-        cfg["subscription_tasks"] = tasks
-        c.json("POST", "/save_settings", cfg)
+        c.json("POST", "/subscription/save", {"tasks": [new_task]})
         print(f"✅ 已创建订阅「{title}」")
 
     elif args.action == "remove":
@@ -419,8 +422,10 @@ def cmd_subscribe(args, c: Client):
         link = args.link or ""
         if not link:
             sys.exit("请指定资源链接（--link 参数）")
-        savepath = args.savepath or "/115"
-        data = c.json("POST", "/subscription/start_with_link", {"link": link, "savepath": savepath})
+        name = " ".join(args.name) if args.name else ""
+        if not name:
+            sys.exit("请指定订阅名称")
+        data = c.json("POST", "/subscription/start_with_link", {"name": name, "link_url": link, "savepath": args.savepath})
         print(f"✅ 订阅已通过链接触发: {json.dumps(data, ensure_ascii=False)}")
 
 
@@ -1041,14 +1046,14 @@ def cmd_scrape(args, c: Client):
         path = " ".join(args.path) if args.path else ""
         if not path:
             sys.exit("请指定文件路径")
-        data = c.json("POST", "/scraper/identify", {"path": path})
+        data = c.json("POST", "/scraper/identify", {"entries": [{"path": path}]})
         print(fmt_json(data))
 
     elif args.action == "rename-plan":
         path = " ".join(args.path) if args.path else ""
         if not path:
             sys.exit("请指定文件路径")
-        data = c.json("POST", "/scraper/rename-plan", {"path": path})
+        data = c.json("POST", "/scraper/rename-plan", {"entries": [{"path": path}]})
         print(fmt_json(data))
 
     elif args.action == "diff":
@@ -1207,9 +1212,12 @@ def cmd_watchlist(args, c: Client):
 
     elif args.action == "add":
         tmdb_id = args.tmdb_id[0] if args.tmdb_id else ""
+        title = args.title or ""
         if not tmdb_id:
             sys.exit("请指定 TMDB ID")
-        data = c.json("POST", "/recommendation/watchlist/add", {"tmdb_id": int(tmdb_id)})
+        if not title:
+            sys.exit("请指定标题（--title）")
+        data = c.json("POST", "/recommendation/watchlist/add", {"tmdb_id": int(tmdb_id), "title": title, "media_type": args.type or "movie"})
         print(f"✅ 已添加到推荐清单: {json.dumps(data, ensure_ascii=False)}")
 
     elif args.action == "remove":
@@ -1281,7 +1289,7 @@ def cmd_resource(args, c: Client):
         if not text:
             sys.exit("请指定资源文本（--text 参数或通过管道传入）")
         provider = args.provider or "115"
-        data = c.json("POST", "/resource/items/import_text", {"text": text, "provider": provider})
+        data = c.json("POST", "/resource/items/import_text", {"raw_text": text, "provider": provider})
         imported = data.get("imported", data.get("count", 0))
         total = data.get("total", data.get("items", 0))
         print(f"✅ 已导入 {imported}/{total} 个资源")
@@ -1295,7 +1303,7 @@ def cmd_resource(args, c: Client):
             text = sys.stdin.read().strip()
         if not text:
             sys.exit("请指定资源文本（--text 参数或通过管道传入）")
-        data = c.json("POST", "/resource/items/preview_text", {"text": text})
+        data = c.json("POST", "/resource/items/preview_text", {"raw_text": text})
         items = data if isinstance(data, list) else data.get("items", data.get("results", []))
         if not items:
             print("未识别到有效资源")
@@ -1570,6 +1578,16 @@ def _build_parser() -> argparse.ArgumentParser:
     sp_sub.add_argument("--provider", default="115", choices=["115", "quark"], help="网盘提供商")
     sp_sub.add_argument("--link", default="", help="资源链接 (start-with-link)")
     sp_sub.add_argument("--task-name", default="", help="订阅名称 (rebuild/episodes)")
+    # 补充参数
+    sp_sub.add_argument("--title", default="", help="订阅标题（用于显示，可与名称不同）")
+    sp_sub.add_argument("--aliases", default="", help="别名（逗号分隔，增加匹配率）")
+    sp_sub.add_argument("--season", type=int, default=1, help="季度号（剧集）")
+    sp_sub.add_argument("--total-episodes", type=int, default=0, help="总集数")
+    sp_sub.add_argument("--exclude-keywords", default="", help="排除关键词（逗号分隔）")
+    sp_sub.add_argument("--min-score", type=int, default=60, help="最低匹配分数 (0-100)")
+    sp_sub.add_argument("--anime-mode", action="store_true", help="番剧匹配模式（多季/严格匹配）")
+    sp_sub.add_argument("--strict-match", action="store_true", help="严格标题匹配")
+    sp_sub.add_argument("--cron-minutes", type=int, default=120, help="定时扫描间隔（分钟）")
 
     # jobs
     sp_jobs = sp.add_parser("jobs", help="管理资源任务")
@@ -1677,6 +1695,8 @@ def _build_parser() -> argparse.ArgumentParser:
     sp_wl.add_argument("--status", default="completed",
                        choices=["watching", "completed", "pending", "dropped"],
                        help="状态 (update)")
+    sp_wl.add_argument("--title", default="", help="标题 (add)")
+    sp_wl.add_argument("--type", default="movie", choices=["movie", "tv"], help="媒体类型 (add)")
 
     # strm
     sp_strm = sp.add_parser("strm", help="STRM 管理")
