@@ -334,7 +334,7 @@ def cmd_subscribe(args, c: Client):
             "title": title.strip(),
             "keyword": title.strip(),
             "quality": args.quality,
-            "savepath": args.savepath.rstrip("/") or "/电影",
+            "savepath": args.savepath.rstrip("/") or "/影视库/电影",
             "provider": args.provider,
             "enabled": True,
             "score": 60,
@@ -1523,7 +1523,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sp_sub.add_argument("name", nargs="*", help="订阅名称 (add/remove/start)")
     sp_sub.add_argument("--type", default="movie", choices=["movie", "tv"], help="媒体类型")
     sp_sub.add_argument("--quality", default="balanced", help="质量偏好 (4K/1080p/720p/balanced)")
-    sp_sub.add_argument("--savepath", default="/电影", help="115 保存路径")
+    sp_sub.add_argument("--savepath", default="/影视库/电影", help="115 保存路径")
     sp_sub.add_argument("--provider", default="115", choices=["115", "quark"], help="网盘提供商")
     sp_sub.add_argument("--link", default="", help="资源链接 (start-with-link)")
     sp_sub.add_argument("--name", default="", help="订阅名称 (rebuild/episodes)")
