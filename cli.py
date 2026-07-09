@@ -267,7 +267,10 @@ def cmd_search(args, c: Client):
 def cmd_channels(args, c: Client):
     """管理资源频道"""
     if args.action == "sync":
-        data = c.json("POST", "/resource/channels/sync", {"force": args.force})
+        sync_payload = {"force": args.force}
+        if args.limit:
+            sync_payload["limit"] = args.limit
+        data = c.json("POST", "/resource/channels/sync", sync_payload)
         print(f"✅ 频道同步已完成: {json.dumps(data, ensure_ascii=False)}")
     elif args.action == "list":
         cfg = c.json("GET", "/get_settings")
@@ -285,13 +288,23 @@ def cmd_channels(args, c: Client):
         channel_id = args.channel_id or ""
         if not channel_id:
             sys.exit("请指定频道 ID（--channel 参数）")
-        data = c.json("POST", "/resource/channels/classify", {"channel_id": channel_id})
+        classify_payload = {"channel_id": channel_id}
+        if args.sample_size:
+            classify_payload["sample_size"] = args.sample_size
+        data = c.json("POST", "/resource/channels/classify", classify_payload)
         print(f"✅ 频道分类已完成: {json.dumps(data, ensure_ascii=False)}")
     elif args.action == "more":
         channel_id = args.channel_id or ""
         if not channel_id:
             sys.exit("请指定频道 ID（--channel 参数）")
-        data = c.json("POST", "/resource/channels/more", {"channel_id": channel_id, "limit": args.limit or 10})
+        more_payload = {"channel_id": channel_id, "limit": args.limit or 10}
+        if args.before:
+            more_payload["before"] = args.before
+        if args.query:
+            more_payload["query"] = args.query
+        if args.provider_filter:
+            more_payload["provider_filter"] = args.provider_filter
+        data = c.json("POST", "/resource/channels/more", more_payload)
         items = data if isinstance(data, list) else data.get("items", data.get("posts", []))
         if not items:
             print(f"频道 @{channel_id} 暂无更多内容")
@@ -355,6 +368,26 @@ def cmd_subscribe(args, c: Client):
             "strict_title_match": args.strict_match,
             "cron_minutes": args.cron_minutes,
             "enabled": True,
+            # Extended parameters
+            "year": args.year or "",
+            "quality_priority": args.quality_priority or "balanced",
+            "min_file_size_mb": args.min_file_size_mb or 0,
+            "exclude_file_extensions": args.exclude_file_extensions or "",
+            "tmdb_id": args.tmdb_id or 0,
+            "tmdb_media_type": args.tmdb_media_type or "",
+            "tmdb_episode_mode": args.tmdb_episode_mode or "seasonal",
+            "share_link_url": args.link or "",
+            "share_link_receive_code": args.receive_code or "",
+            "share_subdir": args.share_subdir or "",
+            "share_subdir_cid": args.share_subdir_cid or "",
+            "fixed_link_channel_search": args.fixed_link_channel_search,
+            "candidate_scan_prefetch_limit": args.candidate_scan_prefetch_limit or 0,
+            "candidate_scan_concurrency": args.candidate_scan_concurrency or 0,
+            "share_scan_concurrency": args.share_scan_concurrency or 0,
+            "share_scan_rate_limit_seconds": args.share_scan_rate_limit_seconds or 0.0,
+            "schedule_weekdays": json.loads(args.schedule_weekdays) if args.schedule_weekdays and args.schedule_weekdays != "[]" else [],
+            "schedule_start_time": args.schedule_start_time or "",
+            "schedule_end_time": args.schedule_end_time or "",
         }
         c.json("POST", "/subscription/save", {"tasks": [new_task]})
         print(f"✅ 已创建订阅「{title}」")
@@ -425,7 +458,7 @@ def cmd_subscribe(args, c: Client):
         name = " ".join(args.name) if args.name else ""
         if not name:
             sys.exit("请指定订阅名称")
-        data = c.json("POST", "/subscription/start_with_link", {"name": name, "link_url": link, "savepath": args.savepath})
+        data = c.json("POST", "/subscription/start_with_link", {"name": name, "link_url": link, "receive_code": args.receive_code or "", "savepath": args.savepath})
         print(f"✅ 订阅已通过链接触发: {json.dumps(data, ensure_ascii=False)}")
 
 
@@ -450,7 +483,18 @@ def cmd_jobs(args, c: Client):
         if not resource_id:
             sys.exit("请指定资源 ID（--resource-id，先 search 获取）")
         savepath = args.savepath or "/115"
-        data = c.json("POST", "/resource/jobs/create", {"resource_id": int(resource_id), "savepath": savepath})
+        payload = {"resource_id": int(resource_id), "savepath": savepath}
+        if args.receive_code:
+            payload["receive_code"] = args.receive_code
+        if args.magnet_provider:
+            payload["magnet_provider"] = args.magnet_provider
+        if args.no_auto_refresh:
+            payload["auto_refresh"] = False
+        if args.allow_duplicate:
+            payload["allow_duplicate"] = True
+        if args.folder_id:
+            payload["folder_id"] = args.folder_id
+        data = c.json("POST", "/resource/jobs/create", payload)
         print(f"✅ 转存任务已创建: {json.dumps(data, ensure_ascii=False)}")
     elif args.action == "refresh":
         job_id = args.job_id or ""
@@ -658,6 +702,14 @@ def cmd_monitor(args, c: Client):
             "webhook_enabled": args.webhook,
             "delay_seconds": args.delay or 0,
             "enabled": not args.pause,
+            # Extended params
+            "target_path": args.target_path or "",
+            "skip_by_dir_mtime": args.skip_dir_mtime,
+            "strm_write_mode": args.strm_write_mode or "incremental",
+            "sync_clean": not args.incremental,
+            "retries": args.retries or 3,
+            "list_delay_ms": args.list_delay_ms or 250,
+            "min_file_size_mb": args.min_file_size_mb or 0,
         }
         tasks.append(new_task)
         cfg["monitor_tasks"] = tasks
@@ -962,6 +1014,18 @@ def cmd_share(args, c: Client):
         code = args.code or ""
         cid = args.cid or ""
         body = {"link_url": url, "receive_code": code, "cid": cid}
+        if args.raw_text:
+            body["raw_text"] = args.raw_text
+        if args.paged:
+            body["paged"] = True
+        if args.folders_only:
+            body["folders_only"] = True
+        if args.force_refresh:
+            body["force_refresh"] = True
+        if args.offset:
+            body["offset"] = args.offset
+        if args.limit:
+            body["limit"] = args.limit
         try:
             data = c.json("POST", f"/resource/browse/{provider}/share_entries_preview", body)
         except SystemExit:
@@ -1029,7 +1093,12 @@ def cmd_share(args, c: Client):
                 savepath = f"/电影/{clean}"
                 print(f"⚠️ TMDB 查询失败, 默认电影: {savepath}")
             print(f"📦 保存路径: {savepath}")
-        data = c.json("POST", "/resource/jobs/create", {"resource_id": int(resource_id), "savepath": savepath})
+        payload = {"resource_id": int(resource_id), "savepath": savepath}
+        if args.receive_code:
+            payload["receive_code"] = args.receive_code
+        if args.magnet_provider:
+            payload["magnet_provider"] = args.magnet_provider
+        data = c.json("POST", "/resource/jobs/create", payload)
         print(f"✅ 转存任务已创建: {json.dumps(data, ensure_ascii=False)}")
 
     elif args.action == "preview-batch":
@@ -1049,14 +1118,20 @@ def cmd_scrape(args, c: Client):
         path = " ".join(args.path) if args.path else ""
         if not path:
             sys.exit("请指定文件路径")
-        data = c.json("POST", "/scraper/identify", {"entries": [{"path": path}]})
+        payload = {"entries": [{"path": path}]}
+        if args.provider:
+            payload["provider"] = args.provider
+        data = c.json("POST", "/scraper/identify", payload)
         print(fmt_json(data))
 
     elif args.action == "rename-plan":
         path = " ".join(args.path) if args.path else ""
         if not path:
             sys.exit("请指定文件路径")
-        data = c.json("POST", "/scraper/rename-plan", {"entries": [{"path": path}]})
+        payload = {"entries": [{"path": path}]}
+        if args.provider:
+            payload["provider"] = args.provider
+        data = c.json("POST", "/scraper/rename-plan", payload)
         print(fmt_json(data))
 
     elif args.action == "diff":
@@ -1084,10 +1159,9 @@ def cmd_scrape(args, c: Client):
         print(f"未找到 Job #{job_id}")
 
     elif args.action == "jobs":
-        provider = args.provider or ""
         params = {"limit": args.limit or 20}
-        if provider:
-            params["provider"] = provider
+        if args.job_id:
+            params["job_id"] = int(args.job_id)
         data = c.json("GET", "/scraper/jobs/state", params)
         print(fmt_json(data))
 
@@ -1111,7 +1185,10 @@ def cmd_scrape(args, c: Client):
     elif args.action == "folders":
         provider = args.provider or "115"
         cid = args.cid or "0"
-        data = c.json("POST", f"/scraper/{provider}/folders", {"cid": cid})
+        payload = {"cid": cid}
+        if args.name:
+            payload["name"] = args.name
+        data = c.json("POST", f"/scraper/{provider}/folders", payload)
         folders = data if isinstance(data, list) else data.get("folders", data.get("items", []))
         if not folders:
             print("(空目录)")
@@ -1141,7 +1218,10 @@ def cmd_scrape(args, c: Client):
         if not name:
             sys.exit("请指定新名称（--name）")
         provider = args.provider or "115"
-        data = c.json("POST", f"/scraper/{provider}/rename", {"path": path, "name": name})
+        payload = {"path": path, "name": name}
+        if args.parent_id:
+            payload["parent_id"] = args.parent_id
+        data = c.json("POST", f"/scraper/{provider}/rename", payload)
         print(f"✅ 已重命名: {json.dumps(data, ensure_ascii=False)}")
 
     elif args.action == "jobs-create":
@@ -1162,7 +1242,10 @@ def cmd_scrape(args, c: Client):
         if not dest:
             sys.exit("请指定目标路径（--dest）")
         provider = args.provider or "115"
-        data = c.json("POST", f"/scraper/{provider}/move", {"path": path, "dest": dest})
+        payload = {"path": path, "dest": dest}
+        if args.source_cid:
+            payload["source_cid"] = args.source_cid
+        data = c.json("POST", f"/scraper/{provider}/move", payload)
         print(f"✅ 移动完成: {json.dumps(data, ensure_ascii=False)}")
 
     elif args.action == "copy":
@@ -1173,7 +1256,10 @@ def cmd_scrape(args, c: Client):
         if not dest:
             sys.exit("请指定目标路径（--dest）")
         provider = args.provider or "115"
-        data = c.json("POST", f"/scraper/{provider}/copy", {"path": path, "dest": dest})
+        payload = {"path": path, "dest": dest}
+        if args.source_cid:
+            payload["source_cid"] = args.source_cid
+        data = c.json("POST", f"/scraper/{provider}/copy", payload)
         print(f"✅ 复制完成: {json.dumps(data, ensure_ascii=False)}")
 
     elif args.action == "delete":
@@ -1185,7 +1271,10 @@ def cmd_scrape(args, c: Client):
         if not confirm:
             print("已取消")
             return
-        data = c.json("POST", f"/scraper/{provider}/delete", {"path": path})
+        payload = {"path": path}
+        if args.parent_id:
+            payload["parent_id"] = args.parent_id
+        data = c.json("POST", f"/scraper/{provider}/delete", payload)
         print(f"✅ 删除完成: {json.dumps(data, ensure_ascii=False)}")
 
     elif args.action == "rollback":
@@ -1226,7 +1315,18 @@ def cmd_watchlist(args, c: Client):
             sys.exit("请指定 TMDB ID")
         if not title:
             sys.exit("请指定标题（--title）")
-        data = c.json("POST", "/recommendation/watchlist/add", {"tmdb_id": int(tmdb_id), "title": title, "media_type": args.type or "movie"})
+        payload = {"tmdb_id": int(tmdb_id), "title": title, "media_type": args.type or "movie"}
+        if args.original_title:
+            payload["original_title"] = args.original_title
+        if args.year:
+            payload["year"] = args.year
+        if args.poster_url:
+            payload["poster_url"] = args.poster_url
+        if args.overview:
+            payload["overview"] = args.overview
+        if args.vote_average:
+            payload["vote_average"] = float(args.vote_average)
+        data = c.json("POST", "/recommendation/watchlist/add", payload)
         print(f"✅ 已添加到推荐清单: {json.dumps(data, ensure_ascii=False)}")
 
     elif args.action == "remove":
@@ -1298,7 +1398,18 @@ def cmd_resource(args, c: Client):
         if not text:
             sys.exit("请指定资源文本（--text 参数或通过管道传入）")
         provider = args.provider or "115"
-        data = c.json("POST", "/resource/items/import_text", {"raw_text": text, "provider": provider})
+        payload = {"raw_text": text, "provider": provider}
+        if args.source_name:
+            payload["source_name"] = args.source_name
+        if args.source_type:
+            payload["source_type"] = args.source_type
+        if args.channel_name:
+            payload["channel_name"] = args.channel_name
+        if args.published_at:
+            payload["published_at"] = args.published_at
+        if args.message_url:
+            payload["message_url"] = args.message_url
+        data = c.json("POST", "/resource/items/import_text", payload)
         imported = data.get("imported", data.get("count", 0))
         total = data.get("total", data.get("items", 0))
         print(f"✅ 已导入 {imported}/{total} 个资源")
@@ -1312,7 +1423,18 @@ def cmd_resource(args, c: Client):
             text = sys.stdin.read().strip()
         if not text:
             sys.exit("请指定资源文本（--text 参数或通过管道传入）")
-        data = c.json("POST", "/resource/items/preview_text", {"raw_text": text})
+        payload = {"raw_text": text}
+        if args.source_name:
+            payload["source_name"] = args.source_name
+        if args.source_type:
+            payload["source_type"] = args.source_type
+        if args.channel_name:
+            payload["channel_name"] = args.channel_name
+        if args.published_at:
+            payload["published_at"] = args.published_at
+        if args.message_url:
+            payload["message_url"] = args.message_url
+        data = c.json("POST", "/resource/items/preview_text", payload)
         items = data if isinstance(data, list) else data.get("items", data.get("results", []))
         if not items:
             print("未识别到有效资源")
@@ -1575,7 +1697,11 @@ def _build_parser() -> argparse.ArgumentParser:
     sp_ch.add_argument("action", choices=["sync", "list", "classify", "more", "sync-names", "sync-cancel"], help="sync=同步, list=列出, classify=分类, more=更多内容, sync-names=同步名称, sync-cancel=取消同步")
     sp_ch.add_argument("--force", action="store_true", help="强制重新同步")
     sp_ch.add_argument("--channel", dest="channel_id", default="", help="频道 ID (more/classify/sync-names)")
-    sp_ch.add_argument("--limit", type=int, default=10, help="条数 (more)")
+    sp_ch.add_argument("--limit", type=int, default=10, help="条数 (more/sync 每频道限制)")
+    sp_ch.add_argument("--sample-size", type=int, default=0, help="采样条数 (classify, 1-100)")
+    sp_ch.add_argument("--before", default="", help="翻页游标 (more)")
+    sp_ch.add_argument("--query", default="", help="搜索关键词 (more)")
+    sp_ch.add_argument("--provider-filter", default="", help="提供商过滤 (more, all/115/quark)")
 
     # subscribe
     sp_sub = sp.add_parser("subscribe", help="管理订阅")
@@ -1597,6 +1723,25 @@ def _build_parser() -> argparse.ArgumentParser:
     sp_sub.add_argument("--anime-mode", action="store_true", help="番剧匹配模式（多季/严格匹配）")
     sp_sub.add_argument("--strict-match", action="store_true", help="严格标题匹配")
     sp_sub.add_argument("--cron-minutes", type=int, default=120, help="定时扫描间隔（分钟）")
+    # 扩展参数
+    sp_sub.add_argument("--year", default="", help="年份过滤（如 2024）")
+    sp_sub.add_argument("--quality-priority", default="balanced", choices=["balanced", "ultra", "fhd", "hd", "sd"], help="画质优先级")
+    sp_sub.add_argument("--min-file-size-mb", type=int, default=0, help="最小文件大小（MB）")
+    sp_sub.add_argument("--exclude-file-extensions", default="", help="排除文件扩展名（逗号分隔）")
+    sp_sub.add_argument("--tmdb-id", type=int, default=0, help="TMDB ID（精确绑定）")
+    sp_sub.add_argument("--tmdb-media-type", default="", choices=["movie", "tv"], help="TMDB 媒体类型")
+    sp_sub.add_argument("--tmdb-episode-mode", default="seasonal", choices=["seasonal", "separate"], help="剧集模式")
+    sp_sub.add_argument("--receive-code", default="", help="分享提取码（start-with-link 或订阅固定链接）")
+    sp_sub.add_argument("--share-subdir", default="", help="分享子目录路径")
+    sp_sub.add_argument("--share-subdir-cid", default="", help="分享子目录 ID")
+    sp_sub.add_argument("--fixed-link-channel-search", action="store_true", help="固定链接辅助频道搜索")
+    sp_sub.add_argument("--candidate-scan-prefetch-limit", type=int, default=0, help="候选扫描预取数（0-80）")
+    sp_sub.add_argument("--candidate-scan-concurrency", type=int, default=0, help="候选扫描并发（1-6）")
+    sp_sub.add_argument("--share-scan-concurrency", type=int, default=0, help="分享扫描并发（1-6）")
+    sp_sub.add_argument("--share-scan-rate-limit-seconds", type=float, default=0.0, help="分享扫描速率限制（0.05-5s）")
+    sp_sub.add_argument("--schedule-weekdays", default="[]", help="周几执行 JSON 数组（如 [1,3,5]）")
+    sp_sub.add_argument("--schedule-start-time", default="", help="开始时间（HH:MM）")
+    sp_sub.add_argument("--schedule-end-time", default="", help="结束时间（HH:MM）")
 
     # jobs
     sp_jobs = sp.add_parser("jobs", help="管理资源任务")
@@ -1606,6 +1751,11 @@ def _build_parser() -> argparse.ArgumentParser:
     sp_jobs.add_argument("--status", default="", help="过滤状态 (pending/submitted/completed/failed)")
     sp_jobs.add_argument("--resource-id", default="", help="资源 ID (create)")
     sp_jobs.add_argument("--savepath", default="/115", help="保存路径 (create)")
+    sp_jobs.add_argument("--receive-code", default="", help="分享提取码 (create)")
+    sp_jobs.add_argument("--magnet-provider", default="", help="磁力下载网盘 (create, 默认 115)")
+    sp_jobs.add_argument("--no-auto-refresh", action="store_true", help="不自动刷新 (create)")
+    sp_jobs.add_argument("--allow-duplicate", action="store_true", help="允许重复导入 (create)")
+    sp_jobs.add_argument("--folder-id", default="", help="目标文件夹 ID (create)")
 
     # settings
     sp_set = sp.add_parser("settings", help="查看/修改配置")
@@ -1653,6 +1803,13 @@ def _build_parser() -> argparse.ArgumentParser:
     sp_mon.add_argument("--webhook", action="store_true", help="启用 Webhook 触发 (add)")
     sp_mon.add_argument("--delay", type=int, default=0, help="触发后延迟秒数 (add)")
     sp_mon.add_argument("--pause", action="store_true", help="创建后暂停 (add)")
+    sp_mon.add_argument("--target-path", default="", help="STRM 输出目标路径 (add)")
+    sp_mon.add_argument("--skip-dir-mtime", action="store_true", help="跳过目录 mtime 检测 (add)")
+    sp_mon.add_argument("--strm-write-mode", default="incremental", choices=["incremental", "full"], help="STRM 写入模式 (add)")
+    sp_mon.add_argument("--incremental", action="store_true", help="增量模式（不清理已删除文件）(add)")
+    sp_mon.add_argument("--retries", type=int, default=3, help="最大重试次数 (add)")
+    sp_mon.add_argument("--list-delay-ms", type=int, default=250, help="列表请求延迟毫秒数 (add)")
+    sp_mon.add_argument("--min-file-size-mb", type=float, default=0.0, help="最小文件大小 MB (add)")
 
     # tree
     sp_tree = sp.add_parser("tree", help="目录树同步")
@@ -1685,6 +1842,12 @@ def _build_parser() -> argparse.ArgumentParser:
     sp_share.add_argument("--id", dest="resource_id", default="", help="资源 ID (receive)")
     sp_share.add_argument("--auto-path", action="store_true", help="自动根据 TMDB 识别类型确定保存路径")
     sp_share.add_argument("--title", default="", help="资源标题 (--auto-path 需要)")
+    sp_share.add_argument("--raw-text", default="", help="原始文本（附加在链接后用于解析）(preview)")
+    sp_share.add_argument("--paged", action="store_true", help="分页模式 (preview)")
+    sp_share.add_argument("--folders-only", action="store_true", help="仅显示文件夹 (preview)")
+    sp_share.add_argument("--force-refresh", action="store_true", help="强制刷新缓存 (preview)")
+    sp_share.add_argument("--offset", type=int, default=0, help="分页偏移 (preview)")
+    sp_share.add_argument("--limit", type=int, default=0, help="分页条数 (preview)")
 
     # scrape
     sp_scrape = sp.add_parser("scrape", help="刮削管理")
@@ -1698,6 +1861,8 @@ def _build_parser() -> argparse.ArgumentParser:
     sp_scrape.add_argument("--new-path", default="", help="新路径 (rename-warning)")
     sp_scrape.add_argument("--cid", default="0", help="目录 ID (folders)")
     sp_scrape.add_argument("--yes", action="store_true", help="跳过确认 (delete)")
+    sp_scrape.add_argument("--parent-id", default="", help="父目录 ID (rename/delete)")
+    sp_scrape.add_argument("--source-cid", default="", help="源目录 ID (move/copy)")
 
     # watchlist
     sp_wl = sp.add_parser("watchlist", help="推荐清单")
@@ -1724,6 +1889,11 @@ def _build_parser() -> argparse.ArgumentParser:
     sp_rsrc.add_argument("--name", default="", help="名称 (quick-links add/remove)")
     sp_rsrc.add_argument("--url", default="", help="链接 URL (quick-links add)")
     sp_rsrc.add_argument("--yes", action="store_true", help="跳过确认 (delete)")
+    sp_rsrc.add_argument("--source-name", default="", help="来源名称 (import/preview)")
+    sp_rsrc.add_argument("--source-type", default="", help="来源类型 (import/preview, 默认 manual)")
+    sp_rsrc.add_argument("--channel-name", default="", help="频道名称 (import/preview)")
+    sp_rsrc.add_argument("--published-at", default="", help="发布时间 (import/preview)")
+    sp_rsrc.add_argument("--message-url", default="", help="消息链接 (import/preview)")
 
     # health
     sp.add_parser("health", help="全链路健康检查")
