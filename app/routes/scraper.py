@@ -155,8 +155,18 @@ async def rename_scraper_entry_endpoint(provider: str, request: Request) -> Dict
     entry_id = str(data.get("entry_id", "") or "").strip()
     parent_id = str(data.get("parent_id", "") or "").strip()
     name = str(data.get("name", "") or "").strip()
+    # Support path-based input for CLI
+    path = str(data.get("path", "") or "").strip()
     if not entry_id:
-        return JSONResponse(status_code=400, content={"ok": False, "msg": "文件 ID 不能为空"})
+        if path:
+            try:
+                entry_ids = await asyncio.to_thread(_resolve_path_to_entry_ids, provider, path)
+                if entry_ids:
+                    entry_id = entry_ids[0]
+            except Exception as exc:
+                return JSONResponse(status_code=400, content={"ok": False, "msg": str(exc)})
+        else:
+            return JSONResponse(status_code=400, content={"ok": False, "msg": "文件 ID 或路径不能为空"})
     if not name:
         return JSONResponse(status_code=400, content={"ok": False, "msg": "新名称不能为空"})
     try:
