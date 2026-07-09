@@ -971,22 +971,22 @@ def cmd_share(args, c: Client):
                         tmdb_title = str(items[0].get("title", "") or items[0].get("name", "") or clean).strip()
                         tmdb_year = str(items[0].get("year", "") or "").strip()
                         if mt == "movie":
-                            savepath = f"/电影/{tmdb_title}"
+                            savepath = f"/影视库/电影/{tmdb_title}"
                             if tmdb_year:
                                 savepath += f" ({tmdb_year})"
                         elif mt == "tv":
-                            savepath = f"/剧集/{tmdb_title}"
+                            savepath = f"/影视库/剧集/{tmdb_title}"
                         else:
-                            savepath = f"/电影/{tmdb_title}"
+                            savepath = f"/影视库/电影/{tmdb_title}"
                         print(f"📺 TMDB 识别: {mt} → {savepath}")
                     else:
-                        savepath = f"/电影/{clean}"
+                        savepath = f"/影视库/电影/{clean}"
                         print(f"⚠️ TMDB 未识别, 默认电影: {savepath}")
                 else:
-                    savepath = f"/电影/{clean}"
+                    savepath = f"/影视库/电影/{clean}"
                     print(f"⚠️ TMDB 未启用, 默认电影: {savepath}")
             except Exception as e:
-                savepath = f"/电影/{clean}"
+                savepath = f"/影视库/电影/{clean}"
                 print(f"⚠️ TMDB 查询失败, 默认电影: {savepath}")
             print(f"📦 保存路径: {savepath}")
         data = c.json("POST", "/resource/jobs/create", {"resource_id": int(resource_id), "savepath": savepath})
