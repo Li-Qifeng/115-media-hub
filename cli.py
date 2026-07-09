@@ -512,6 +512,19 @@ def cmd_jobs(args, c: Client):
 
 def cmd_settings(args, c: Client):
     """查看/修改配置"""
+    if args.favorite_dirs_115 is not None or args.favorite_dirs_quark is not None:
+        cfg = c.json("GET", "/get_settings")
+        if args.favorite_dirs_115 is not None:
+            dirs = [d.strip() for d in args.favorite_dirs_115.split(",") if d.strip()]
+            cfg["resource_favorite_dirs_115"] = "\n".join(dirs)
+            print(f"✅ 115 常用目录: {len(dirs)} 个")
+        if args.favorite_dirs_quark is not None:
+            dirs = [d.strip() for d in args.favorite_dirs_quark.split(",") if d.strip()]
+            cfg["resource_favorite_dirs_quark"] = "\n".join(dirs)
+            print(f"✅ Quark 常用目录: {len(dirs)} 个")
+        c.json("POST", "/save_settings", cfg)
+        print("✅ 配置已保存")
+        return
     if args.test_proxy:
         result = c.json("POST", "/settings/tg_proxy/test", {})
         print(fmt_json(result))
@@ -1763,6 +1776,8 @@ def _build_parser() -> argparse.ArgumentParser:
     sp_set.add_argument("--test-proxy", action="store_true", help="测试 TG 代理连接")
     sp_set.add_argument("--test-pansou", action="store_true", help="测试 PanSou 盘搜")
     sp_set.add_argument("--test-notify", action="store_true", help="测试通知推送")
+    sp_set.add_argument("--favorite-dirs-115", default=None, help="115 常用目录（逗号分隔，如 电影=影视/电影,电视剧=影视/电视剧）")
+    sp_set.add_argument("--favorite-dirs-quark", default=None, help="Quark 常用目录（逗号分隔）")
 
     # logs
     sp_logs = sp.add_parser("logs", help="查看系统日志")
