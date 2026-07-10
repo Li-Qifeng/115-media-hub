@@ -389,7 +389,7 @@ def cmd_subscribe(args, c: Client):
             "schedule_start_time": args.schedule_start_time or "",
             "schedule_end_time": args.schedule_end_time or "",
         }
-        c.json("POST", "/subscription/save", {"tasks": [new_task]})
+        c.json("POST", "/subscription/save", {"tasks": tasks + [new_task]})
         print(f"✅ 已创建订阅「{title}」")
 
     elif args.action == "remove":
