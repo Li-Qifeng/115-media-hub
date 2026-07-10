@@ -389,6 +389,9 @@ def cmd_subscribe(args, c: Client):
             "schedule_start_time": args.schedule_start_time or "",
             "schedule_end_time": args.schedule_end_time or "",
         }
+        # 未指定查询星期时，移除字段让后端 fallback 到全周
+        if not new_task.get("schedule_weekdays") and new_task.get("cron_minutes", 0) > 0:
+            del new_task["schedule_weekdays"]
         c.json("POST", "/subscription/save", {"tasks": tasks + [new_task]})
         print(f"✅ 已创建订阅「{title}」")
 
