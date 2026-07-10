@@ -594,6 +594,7 @@ def cmd_settings(args, c: Client):
             "tmdb_enabled", "tmdb_api_key",
             "resource_sources", "subscription_tasks", "monitor_tasks",
             "strm_external_host", "extensions",
+            "default_scan_path", "default_target_path",
         ]
         print(f"配置 ({len(cfg)} 项)")
         print()
@@ -757,13 +758,13 @@ def cmd_monitor(args, c: Client):
                 sys.exit(f"监控任务「{name}」已存在")
         new_task = {
             "name": name,
-            "scan_path": args.scan_path.rstrip("/") if args.scan_path else "/",
+            "scan_path": args.scan_path.rstrip("/") if args.scan_path else cfg.get("default_scan_path", "").rstrip("/") or "/",
             "cron_minutes": args.cron_minutes or 0,
             "webhook_enabled": args.webhook,
             "delay_seconds": args.delay or 0,
             "enabled": not args.pause,
             # Extended params
-            "target_path": args.target_path or "",
+            "target_path": args.target_path or cfg.get("default_target_path", "") or "",
             "skip_by_dir_mtime": args.skip_dir_mtime,
             "strm_write_mode": args.strm_write_mode or "incremental",
             "sync_clean": not args.incremental,
